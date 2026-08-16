@@ -36,8 +36,8 @@ BUILTIN_PATCH_MIN = 0
 BUILTIN_PATCH_MAX = 257
 DEFAULT_CV_PITCH_INPUT = 0  # CV1 in
 DEFAULT_CV_GATE_INPUT = 1  # CV2 in
-DEFAULT_CV_GATE_ON = 1.2
-DEFAULT_CV_GATE_OFF = 0.6
+DEFAULT_CV_GATE_ON = 2.5
+DEFAULT_CV_GATE_OFF = 1.0
 DEFAULT_CV_PITCH_SCALE = 12.0  # 1V/oct -> 12 semitones per volt
 DEFAULT_CV_PITCH_OFFSET = 60.0  # 0V = MIDI note 60
 DEFAULT_FILTER_TYPE = "LPF"
@@ -1278,13 +1278,18 @@ class SystemPage(PageBase):
                 line = "MIDI Ch:%d" % self.app.cfg["system"]["midi_channel"]
             elif it == "Input":
                 line = "Input:%s" % self.app.input_driver.name
+            d.text("%s%s %s" % (marker, star, line), 0, y, 255)
+            y += 14
+
 class ScopePage(PageBase):
     title = "Scope"
 
     SOURCES = ["AUDIO CV1", "AUDIO CV2", "CV1 ROLL", "CV2 ROLL", "DUAL", "SYNTH"]
-    SHORT_SRC = ["AUD1", "AUD2", "CV1", "CV2", "DUAL", "VOX"]
+    SHORT_SRC = ["AU1", "AU2", "CV1", "CV2", "DUL", "VOX"]
     SCALES = ["5V", "10V", "+/-5V"]
+    SHORT_SCALE = ["5V", "10V", "+-5"]
     TRIGGERS = ["AUTO", "NORM", "FREE"]
+    SHORT_TRIG = ["AUT", "NRM", "FRE"]
 
     NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
@@ -1303,6 +1308,7 @@ class ScopePage(PageBase):
         self.roll_cv2 = [0.0] * self.buf_width
         self.last_burst = [0.0] * self.buf_width
         self.synth_phase = 0.0
+        self.vox_amp = 0.0
 
         self.last_v = 0.0
         self.v_min = 0.0
@@ -1340,59 +1346,57 @@ class ScopePage(PageBase):
                     self.trigger_idx = (self.trigger_idx + ev.delta) % len(self.TRIGGERS)
                 elif self.edit_field == 3:
                     self.hold = not self.hold
+            return
 
-    def _sample_burst(self, cv_idx):
-        # Fast burst sample loop for audio-rate signals
+    def _sample_burst(self, cv_channel):
         buf = []
-        for _ in range(160):
-            try:
-                buf.append(float(amyboard.cv_in(cv_idx)))
-            except Exception:
-                buf.append(0.0)
+        try:
+            for _ in range(self.buf_width + 16):
+                buf.append(float(amyboard.cv_in(cv_channel)))
+                time.sleep_us(80)
+        except Exception:
+            pass
         return buf
+
+    def _map_y(self, v, y_top=16, y_bot=98):
+        scale_mode = self.SCALES[self.scale_idx]
+        if scale_mode == "5V":
+            norm = clamp(v / 5.0, 0.0, 1.0)
+        elif scale_mode == "10V":
+            norm = clamp(v / 10.0, 0.0, 1.0)
+        else:  # +/-5V
+            norm = clamp((v + 5.0) / 10.0, 0.0, 1.0)
+        return int(y_bot - norm * (y_bot - y_top))
 
     def _get_note_str(self, v):
         try:
             p = self.app._preset_values()
             scale = float(p.get("cv_pitch_scale", DEFAULT_CV_PITCH_SCALE))
             offset = float(p.get("cv_pitch_offset", DEFAULT_CV_PITCH_OFFSET))
-            note_f = v * scale + offset
-            note_i = int(clamp(note_f, 0, 127))
-            cents = int((note_f - note_i) * 100)
-            octave = (note_i // 12) - 1
-            name = self.NOTE_NAMES[note_i % 12]
-            cents_sign = "+" if cents >= 0 else ""
-            return "%s%d %s%dc" % (name, octave, cents_sign, cents)
+            note_num = int(v * scale + offset)
+            note_num = clamp(note_num, 0, 127)
+            octave = (note_num // 12) - 1
+            name = self.NOTE_NAMES[note_num % 12]
+            return "%s%d (%d)" % (name, octave, note_num)
         except Exception:
-            return ""
-
-    def _map_y(self, v, y_min, y_max):
-        scale = self.SCALES[self.scale_idx]
-        h = y_max - y_min
-        if scale == "5V":
-            norm = clamp(v / 5.0, 0.0, 1.0)
-        elif scale == "10V":
-            norm = clamp(v / 10.0, 0.0, 1.0)
-        else:  # "+/-5V"
-            norm = clamp((v + 5.0) / 10.0, 0.0, 1.0)
-        return y_max - int(norm * h)
+            return "--"
 
     def render(self, d):
-        # 1. Header Bar (y=0..12)
+        # 1. Header Bar (y=0..12) - Evenly spaced 4 columns across 128px
         src_label = self.SHORT_SRC[self.source_idx]
-        scale_label = self.SCALES[self.scale_idx]
-        trig_label = self.TRIGGERS[self.trigger_idx]
-        hold_label = "HOLD" if self.hold else "RUN"
+        scale_label = self.SHORT_SCALE[self.scale_idx]
+        trig_label = self.SHORT_TRIG[self.trigger_idx]
+        hold_label = "HLD" if self.hold else "RUN"
 
         # Highlight current edit field with prefix marker
-        f0 = ">" if (self.editing and self.edit_field == 0) else ""
-        f1 = ">" if (self.editing and self.edit_field == 1) else ""
-        f2 = ">" if (self.editing and self.edit_field == 2) else ""
-        f3 = ">" if (self.editing and self.edit_field == 3) else ""
+        f0 = ">" if (self.editing and self.edit_field == 0) else " "
+        f1 = ">" if (self.editing and self.edit_field == 1) else " "
+        f2 = ">" if (self.editing and self.edit_field == 2) else " "
+        f3 = ">" if (self.editing and self.edit_field == 3) else " "
 
         d.text("%s%s" % (f0, src_label), 0, 1, 255)
-        d.text("%s%s" % (f1, scale_label), 40, 1, 255)
-        d.text("%s%s" % (f2, trig_label), 74, 1, 255)
+        d.text("%s%s" % (f1, scale_label), 34, 1, 255)
+        d.text("%s%s" % (f2, trig_label), 68, 1, 255)
         d.text("%s%s" % (f3, hold_label), 102, 1, 255)
         d.hline(0, 12, 128, 255)
 
@@ -1497,13 +1501,34 @@ class ScopePage(PageBase):
 
         elif src == 5:  # SYNTH (Voice Preview)
             import math
-            synth_wave = []
-            for i in range(self.buf_width):
-                t = self.synth_phase + (i * 0.18)
-                s = math.sin(t) + 0.35 * math.sin(2.0 * t) + 0.18 * math.sin(3.0 * t)
-                synth_wave.append(s * 1.8 + 2.5)
+            is_active = bool(self.app._gate_prev)
+            target_amp = 1.0 if is_active else 0.0
+
             if not self.hold:
-                self.synth_phase = (self.synth_phase + 0.35) % (2.0 * math.pi)
+                self.vox_amp += (target_amp - self.vox_amp) * 0.4
+                if self.vox_amp < 0.02:
+                    self.vox_amp = 0.0
+
+            scale_mode = self.SCALES[self.scale_idx]
+            base_v = 0.0 if scale_mode == "+/-5V" else (2.5 if scale_mode == "5V" else 5.0)
+
+            synth_wave = []
+            note = self.app._last_note if self.app._last_note >= 0 else 60
+            freq_factor = clamp(0.08 + (note - 36) * 0.003, 0.05, 0.45)
+            cutoff = self.app._preset_values().get("filter_cutoff", DEFAULT_FILTER_CUTOFF)
+            harmonics = clamp(cutoff / 3500.0, 0.0, 1.0)
+
+            for i in range(self.buf_width):
+                if self.vox_amp > 0.0:
+                    t = self.synth_phase + (i * freq_factor)
+                    s = math.sin(t) + (0.35 * harmonics) * math.sin(2.0 * t) + (0.18 * harmonics) * math.sin(3.0 * t)
+                    v = base_v + (s * 2.0 * self.vox_amp)
+                else:
+                    v = base_v
+                synth_wave.append(v)
+
+            if not self.hold and self.vox_amp > 0.0:
+                self.synth_phase = (self.synth_phase + 0.4) % (2.0 * math.pi)
 
             self.last_v = synth_wave[-1]
             self.v_min = min(synth_wave)
@@ -1526,6 +1551,14 @@ class ScopePage(PageBase):
         elif src in (1, 3):  # CV2 / Gate mode -> show Gate state
             gate_state = "HIGH" if self.last_v >= DEFAULT_CV_GATE_ON else "LOW"
             d.text("Gate:%s (%.2fV)" % (gate_state, self.last_v), 0, 116, 255)
+        elif src == 5:  # VOX
+            if self.app._gate_prev and self.app._last_note >= 0:
+                note_i = int(clamp(self.app._last_note, 0, 127))
+                octave = (note_i // 12) - 1
+                name = self.NOTE_NAMES[note_i % 12]
+                d.text("Voice: %s%d ACTIVE" % (name, octave), 0, 116, 255)
+            else:
+                d.text("Voice: IDLE (No Gate)", 0, 116, 255)
         else:
             d.text("Min:%.2f Max:%.2f" % (self.v_min, self.v_max), 0, 116, 255)
 
@@ -1930,7 +1963,9 @@ class MenuApp:
                 gate_v = amyboard.cv_in(p["cv_gate_input"])
                 note = int(pitch_v * p["cv_pitch_scale"] + p["cv_pitch_offset"])
                 note = max(0, min(127, note))
-                gate = gate_v > p["cv_gate_on"]
+                gate_on = float(p.get("cv_gate_on", DEFAULT_CV_GATE_ON))
+                gate_off = float(p.get("cv_gate_off", DEFAULT_CV_GATE_OFF))
+                gate = gate_v >= (gate_off if self._gate_prev else gate_on)
                 import amy
                 if gate and (not self._gate_prev or note != self._last_note):
                     amy.send(synth=p["synth"], note=note, vel=1)
