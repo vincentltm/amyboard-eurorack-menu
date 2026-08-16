@@ -1288,8 +1288,9 @@ class ScopePage(PageBase):
     SHORT_SRC = ["AU1", "AU2", "CV1", "CV2", "DUL", "AMY"]
     SCALES = ["5V", "10V", "+/-5V"]
     SHORT_SCALE = ["5V", "10V", "+-5"]
-    TRIGGERS = ["AUTO", "NORM", "FREE"]
-    SHORT_TRIG = ["AUT", "NRM", "FRE"]
+    TIME_SCALES = ["0.5m", "1ms", "2ms", "5ms", "10m"]
+    TIME_DELAYS_US = [35, 80, 180, 450, 1100]
+    TIME_STRIDES = [1, 2, 3, 4, 6]
 
     NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
@@ -1297,10 +1298,10 @@ class ScopePage(PageBase):
         super().__init__(app)
         self.source_idx = 0
         self.scale_idx = 0
-        self.trigger_idx = 0
+        self.time_idx = 1  # Default: 1ms standard timebase
         self.hold = False
 
-        self.edit_field = 0  # 0=Source, 1=Scale, 2=Trigger, 3=Hold
+        self.edit_field = 0  # 0=Source, 1=Volt Scale, 2=Time Scale, 3=Hold
 
         # Data buffers (120 points wide to fit inside x=4..123)
         self.buf_width = 120
@@ -1341,17 +1342,18 @@ class ScopePage(PageBase):
                 elif self.edit_field == 1:
                     self.scale_idx = (self.scale_idx + ev.delta) % len(self.SCALES)
                 elif self.edit_field == 2:
-                    self.trigger_idx = (self.trigger_idx + ev.delta) % len(self.TRIGGERS)
+                    self.time_idx = (self.time_idx + ev.delta) % len(self.TIME_SCALES)
                 elif self.edit_field == 3:
                     self.hold = not self.hold
             return
 
     def _sample_burst(self, cv_channel):
         buf = []
+        delay = self.TIME_DELAYS_US[self.time_idx]
         try:
-            for _ in range(self.buf_width + 16):
+            for _ in range(self.buf_width + 24):
                 buf.append(float(amyboard.cv_in(cv_channel)))
-                time.sleep_us(80)
+                time.sleep_us(delay)
         except Exception:
             pass
         return buf
@@ -1380,10 +1382,10 @@ class ScopePage(PageBase):
             return "--"
 
     def render(self, d):
-        # 1. Header Bar (y=0..12) - Evenly spaced 4 columns across 128px
+        # 1. Header Bar (y=0..12) - 4 Evenly Spaced Columns: [SRC] [VOLT] [TIME] [HOLD]
         src_label = self.SHORT_SRC[self.source_idx]
         scale_label = self.SHORT_SCALE[self.scale_idx]
-        trig_label = self.SHORT_TRIG[self.trigger_idx]
+        time_label = self.TIME_SCALES[self.time_idx]
         hold_label = "HLD" if self.hold else "RUN"
 
         # Highlight current edit field with prefix marker
@@ -1394,7 +1396,7 @@ class ScopePage(PageBase):
 
         d.text("%s%s" % (f0, src_label), 0, 1, 255)
         d.text("%s%s" % (f1, scale_label), 34, 1, 255)
-        d.text("%s%s" % (f2, trig_label), 68, 1, 255)
+        d.text("%s%s" % (f2, time_label), 68, 1, 255)
         d.text("%s%s" % (f3, hold_label), 102, 1, 255)
         d.hline(0, 12, 128, 255)
 
@@ -1420,7 +1422,7 @@ class ScopePage(PageBase):
                     avg = (self.v_min + self.v_max) / 2.0
 
                     trig = 0
-                    if self.TRIGGERS[self.trigger_idx] != "FREE":
+                    if self.v_pp > 0.05:
                         for i in range(len(raw) - self.buf_width):
                             if raw[i] <= avg and raw[i + 1] > avg:
                                 trig = i
@@ -1504,7 +1506,8 @@ class ScopePage(PageBase):
                     buf = amy.get_output_buffer()
                     if buf:
                         all_s = struct.unpack("<512h", buf)
-                        raw_audio = [all_s[i] / 32768.0 for i in range(0, len(all_s), 2)]
+                        stride = self.TIME_STRIDES[self.time_idx]
+                        raw_audio = [all_s[i] / 32768.0 for i in range(0, len(all_s), 2 * stride)]
                         max_v = max(raw_audio)
                         min_v = min(raw_audio)
                         pp = max_v - min_v
@@ -1514,7 +1517,7 @@ class ScopePage(PageBase):
                             gain = clamp(1.8 / pp, 1.0, 8.0)
 
                         trig = 0
-                        if self.TRIGGERS[self.trigger_idx] != "FREE" and pp > 0.01:
+                        if pp > 0.01:
                             for i in range(len(raw_audio) - self.buf_width):
                                 if raw_audio[i] <= 0.0 and raw_audio[i + 1] > 0.0:
                                     trig = i
