@@ -92,13 +92,14 @@ def main():
         s.write(b"\x03\x03\x01")
         time.sleep(0.3)
 
+    upload_file(s, "boot.py", "/user/boot.py")
     upload_file(s, "menu.py", "/user/current/menu.py")
     upload_file(s, "sketch.py", "/user/current/sketch.py")
     upload_file(s, "perf_config.json", "/user/current/perf_config.json")
 
     print("🔄 Soft-resetting board to run new code...")
     try:
-        raw_exec(s, "import machine\nmachine.soft_reset()\n")
+        raw_exec(s, "import sys\nfor p in ('/user/current', '/current'):\n    if p not in sys.path: sys.path.insert(0, p)\nimport sketch\n")
         s.write(b"\x02")
     except Exception:
         pass
