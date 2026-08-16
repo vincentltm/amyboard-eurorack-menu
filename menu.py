@@ -662,7 +662,7 @@ class AdafruitEncoderInputDriver(BaseInputDriver):
 
     def _ss_read(self, base, reg, n):
         self.i2c.writeto(self.seesaw_addr, bytes([base, reg]))
-        time.sleep_ms(2)
+        time.sleep_us(80)
         return self.i2c.readfrom(self.seesaw_addr, n)
 
     def _ss_read_pos(self):
@@ -2677,8 +2677,8 @@ DEFAULT_CFG = {
         "release": 450,
     },
     "lfos": [
-        {"wave": "Sine", "rate": 1.0, "depth": 75, "dest": "Filter"},
-        {"wave": "Triangle", "rate": 0.5, "depth": 50, "dest": "CV1 Out"},
+        {"wave": "Sine", "rate": 1.0, "depth": 50, "dest": "None"},
+        {"wave": "Triangle", "rate": 0.5, "depth": 50, "dest": "None"},
     ],
     "voice_mode": {"polyphony": 6, "unison": False, "detune": 12, "spread": 18},
     "cv_routing": {
@@ -3426,6 +3426,7 @@ class MenuApp:
         last_save = time.ticks_ms()
         last_render = time.ticks_ms()
         last_gc = time.ticks_ms()
+        needs_render = True
         
         while True:
             try:
@@ -3444,6 +3445,7 @@ class MenuApp:
             ev = self.input_driver.poll(now)
             if ev.delta or ev.click or ev.long_press:
                 self.handle_event(ev)
+                needs_render = True
 
             # 2. High-Precision Engine Ticks (Sub-millisecond Sequencer & Drums)
             self.tick_sequencer(now)
@@ -3482,17 +3484,23 @@ class MenuApp:
                     pass
                 self.audition_off_time = None
 
-            # 5. Decoupled Display Refresh (Rock-Solid 30 FPS = every ~33ms)
-            if time.ticks_diff(now, last_render) >= 33:
+            # 5. Smart Event-Driven Display Refresh
+            is_anim = self.cfg.get("sequencer", {}).get("running", False) or \
+                      self.cfg.get("drums", {}).get("running", False) or \
+                      self.current_page_key in ("scope", "perform", "lfos")
+            render_interval = 40 if is_anim else 150
+
+            if needs_render or time.ticks_diff(now, last_render) >= render_interval:
                 self.render()
                 last_render = now
+                needs_render = False
 
             # 6. Periodic State Save & Memory Cleanup
             if time.ticks_diff(now, last_save) > 10000:
                 self.save_state()
                 last_save = now
 
-            if time.ticks_diff(now, last_gc) > 15000:
+            if time.ticks_diff(now, last_gc) > 20000:
                 try:
                     import gc
                     gc.collect()
@@ -3500,8 +3508,8 @@ class MenuApp:
                     pass
                 last_gc = now
 
-            # Ultra-short yield to keep Core 1 responsive without burning CPU
-            time.sleep_ms(2)
+            # Ultra-short yield
+            time.sleep_ms(1)
 
 
 def main():
