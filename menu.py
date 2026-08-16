@@ -836,6 +836,7 @@ class PatchesPage(PageBase):
         super().__init__(app)
         self.files = []
         self.offset = 0
+
     def _item_count(self):
         return 1 + len(self.files)
 
@@ -876,25 +877,20 @@ class PatchesPage(PageBase):
                         self.sel = self.files.index(saved) + 1
                     except Exception:
                         self.sel = 0
-                    if self.sel < self.offset:
-                        self.offset = self.sel
-                    if self.sel >= self.offset + 6:
-                        self.offset = self.sel - 5
                     self.app.notice("Saved " + short_name(saved))
             elif len(self.files) > 0:
                 p = self.files[self.sel - 1]
                 status = self.app.load_patch_profile(p)
                 if status == "loaded":
                     self.app.notice("Loaded " + short_name(p))
-                elif status == "loaded_cfg_only":
-                    self.app.notice("Loaded cfg;apply err")
                 else:
                     self.app.notice("Load failed")
         if ev.long_press:
             self.app.back_to_menu()
 
     def render(self, d):
-        d.text("Patches", 0, 0, 255)
+        d.text("PATCH PROFILES", 0, 1, 255)
+        d.hline(0, 12, 128, 255)
 
         y = 16
         start = self.offset
@@ -905,12 +901,13 @@ class PatchesPage(PageBase):
             name = self._item_label(i)
             if i > 0 and self.files[i - 1] == current:
                 name = "*" + name
-            d.text(prefix + name[:18], 0, y, 255)
-            y += 17
+            d.text(prefix + name[:15], 0, y, 255)
+            y += 15
+
 
 class PresetVoicePage(PageBase):
     title = "Preset Voice"
-    fields = ["patch", "voices"]
+    fields = ["patch", "synth", "voices"]
 
     def _values(self):
         return self.app.cfg["preset_voice"]
@@ -930,6 +927,14 @@ class PresetVoicePage(PageBase):
         if ev.delta != 0:
             if f == "patch":
                 v[f] = clamp(int(v.get(f, BUILTIN_PATCH_MIN)) + ev.delta, BUILTIN_PATCH_MIN, BUILTIN_PATCH_MAX)
+                # Quick audio audition preview note
+                try:
+                    import amy
+                    amy.send(synth=int(v.get("synth", 1)), patch=v[f], note=60, vel=0.75)
+                except Exception:
+                    pass
+            elif f == "synth":
+                v["synth"] = clamp(int(v.get("synth", 1)) + ev.delta, 1, 4)
             elif f == "voices":
                 v["num_voices"] = clamp(int(v.get("num_voices", 1)) + ev.delta, 1, 16)
 
@@ -943,25 +948,32 @@ class PresetVoicePage(PageBase):
     def render(self, d):
         v = self._values()
         patch = int(v.get("patch", BUILTIN_PATCH_MIN))
+        synth = int(v.get("synth", 1))
         voices = int(v.get("num_voices", 1))
-        d.text("Preset Voice", 0, 0, 255)
+
+        d.text("PRESET VOICE", 0, 1, 255)
+        mode_str = "EDIT" if self.editing else "SEL"
+        d.text("[%s]" % mode_str, 88, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        pname = self.app.patch_label(patch)
         rows = [
-            "patch:%d" % patch,
-            "bank:%s" % self.app.patch_label(patch),
-            "voices:%d" % voices,
-            "CV1:pitch 1V/oct",
-            "CV2:gate trig",
-            "click:save",
+            ("Patch", "#%03d" % patch),
+            ("Name", pname[:10]),
+            ("Synth", "Engine %d" % synth),
+            ("Poly", "%d voices" % voices),
         ]
-        y = 14
-        for i, row in enumerate(rows):
-            marker = ">"
-            star = " "
-            if i < len(self.fields):
-                marker = ">" if i == self.sel else " "
-                star = "*" if self.editing and i == self.sel else " "
-            d.text("%s%s %s" % (marker, star, row[:16]), 0, y, 255)
-            y += 14
+        y = 18
+        for i, (label, val) in enumerate(rows):
+            marker = ">" if (i < len(self.fields) and i == self.sel) else " "
+            star = "*" if (self.editing and i == self.sel) else " "
+            d.text("%s%s%s" % (marker, star, label), 0, y, 255)
+            d.text(val, 56, y, 255)
+            y += 18
+
+        d.hline(0, 96, 128, 255)
+        d.text("CV1:1V/Oct CV2:Gate", 0, 100, 255)
+        d.text("MIDI Ch:%d" % self.app.cfg["system"]["midi_channel"], 0, 114, 255)
 
 
 class FilterTypePage(PageBase):
@@ -982,19 +994,32 @@ class FilterTypePage(PageBase):
             idx = self._selected_index()
             idx = (idx + ev.delta) % len(FILTER_TYPE_OPTIONS)
             self._values()["filter_type"] = FILTER_TYPE_OPTIONS[idx]
-            self.app.apply_filter_type(save=True, show_notice=True)
+            self.app.apply_filter_type(save=True, show_notice=False)
         if ev.click or ev.long_press:
             self.app.back_to_menu()
 
     def render(self, d):
         cur = normalize_filter_type(self._values().get("filter_type", DEFAULT_FILTER_TYPE))
-        d.text("Filt Type", 0, 0, 255)
-        d.text("Mode:%s" % cur, 0, 20, 255)
-        y = 40
+        d.text("FILTER TOPOLOGY", 0, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        y = 20
+        descriptions = {
+            "LPF": "12dB Low-Pass",
+            "HPF": "12dB High-Pass",
+            "BPF": "12dB Band-Pass",
+            "LPF24": "24dB 4-Pole LPF",
+        }
         for opt in FILTER_TYPE_OPTIONS:
             marker = ">" if opt == cur else " "
+            desc = descriptions.get(opt, "")
             d.text("%s %s" % (marker, opt), 0, y, 255)
-            y += 17
+            d.text(desc[:12], 44, y, 255)
+            y += 22
+
+        d.hline(0, 110, 128, 255)
+        d.text("Active: %s" % cur, 0, 114, 255)
+
 
 class FilterCutoffPage(PageBase):
     title = "Filt Cut"
@@ -1005,22 +1030,75 @@ class FilterCutoffPage(PageBase):
     def on_event(self, ev):
         if ev.delta != 0:
             p = self._values()
-            step = 200 if p["filter_cutoff"] >= 2000 else 50
-            p["filter_cutoff"] = clamp(p["filter_cutoff"] + ev.delta * step, 100, 12000)
-            self.app.apply_filter_type(save=True, show_notice=True)
+            step = 250 if p["filter_cutoff"] >= 2500 else (100 if p["filter_cutoff"] >= 1000 else 40)
+            p["filter_cutoff"] = clamp(p["filter_cutoff"] + ev.delta * step, 80, 16000)
+            self.app.apply_filter_type(save=True, show_notice=False)
         if ev.click or ev.long_press:
             self.app.back_to_menu()
 
     def render(self, d):
         p = self._values()
         cutoff = p["filter_cutoff"]
-        d.text("Filt Cutoff", 0, 0, 255)
-        d.text("Freq:%dHz" % cutoff, 0, 24, 255)
-        d.bar(0, 48, 128, 12, cutoff, 12000)
+        ftype = normalize_filter_type(p.get("filter_type", DEFAULT_FILTER_TYPE))
+        res = float(self.app.cfg.get("fx", {}).get("resonance", 1.0))
+
+        # 1. Header
+        d.text("FILTER CUTOFF", 0, 1, 255)
+        if cutoff >= 1000:
+            d.text("%.2fkHz" % (cutoff / 1000.0), 80, 1, 255)
+        else:
+            d.text("%dHz" % cutoff, 84, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        # 2. Interactive Graphical Filter Frequency Response Curve (Bode Plot)
+        # x=4..123, y=20..84
+        d.rect(2, 18, 124, 70, 255)
+        # Center grid line
+        for x in range(4, 122, 6):
+            d.pixel(x, 52, 255)
+
+        import math
+        norm_fc = clamp((math.log(cutoff) - math.log(80)) / (math.log(16000) - math.log(80)), 0.0, 1.0)
+        fc_px = int(4 + norm_fc * 116)
+
+        # Draw filter curve
+        y_prev = 52
+        for x in range(4, 124):
+            dx = (x - fc_px) / 16.0
+            if "LP" in ftype:
+                # Low pass shelf roll-off
+                gain = 1.0 / math.sqrt(1.0 + max(0.0, dx)**4)
+                if abs(dx) < 0.8:
+                    gain += (res - 1.0) * 0.3 * (1.0 - abs(dx))
+            elif "HP" in ftype:
+                # High pass shelf roll-off
+                gain = 1.0 / math.sqrt(1.0 + max(0.0, -dx)**4)
+                if abs(dx) < 0.8:
+                    gain += (res - 1.0) * 0.3 * (1.0 - abs(dx))
+            else:  # BPF
+                # Band pass peak
+                gain = 1.0 / (1.0 + (dx * 1.5)**2)
+                gain += (res - 1.0) * 0.4 * max(0.0, 1.0 - abs(dx))
+
+            gain = clamp(gain, 0.0, 1.8)
+            y_curr = int(82 - gain * 34)
+            y_curr = clamp(y_curr, 20, 84)
+            if x > 4:
+                d.line(x - 1, y_prev, x, y_curr, 255)
+            y_prev = y_curr
+
+        # Vertical cutoff frequency line
+        for y in range(20, 84, 3):
+            d.pixel(fc_px, y, 255)
+
+        # 3. Footer info
+        d.hline(0, 94, 128, 255)
+        d.text("Type:%s  Res:%.1f" % (ftype, res), 0, 100, 255)
+        d.text("Range: 80Hz - 16kHz", 0, 114, 255)
+
 
 class VoiceModePage(PageBase):
     title = "Voice Mode"
-
     fields = ["polyphony", "unison", "detune", "spread"]
 
     def _values(self):
@@ -1037,18 +1115,16 @@ class VoiceModePage(PageBase):
                 self.app.back_to_menu()
             return
 
-        # editing
         f = self.fields[self.sel]
         if ev.delta != 0:
             if f == "polyphony":
                 v[f] = clamp(v[f] + ev.delta, 1, 16)
             elif f == "unison":
-                if ev.delta != 0:
-                    v[f] = not v[f]
+                v[f] = not v[f]
             elif f == "detune":
-                v[f] = clamp(v[f] + ev.delta, 0, 100)
+                v[f] = clamp(v[f] + ev.delta * 2, 0, 100)
             elif f == "spread":
-                v[f] = clamp(v[f] + ev.delta, 0, 100)
+                v[f] = clamp(v[f] + ev.delta * 2, 0, 100)
         if ev.click:
             self.editing = False
             self.app.save_cfg()
@@ -1057,17 +1133,186 @@ class VoiceModePage(PageBase):
             self.app.back_to_menu()
 
     def render(self, d):
-        d.text("Voice Mode", 0, 0, 255)
+        d.text("VOICE & UNISON", 0, 1, 255)
+        mode_str = "EDIT" if self.editing else "SEL"
+        d.text("[%s]" % mode_str, 88, 1, 255)
+        d.hline(0, 12, 128, 255)
+
         v = self._values()
-        y = 14
-        for i, f in enumerate(self.fields):
+        rows = [
+            ("Poly", "%d vox" % v["polyphony"], v["polyphony"], 16),
+            ("Unison", "ON" if v["unison"] else "OFF", 1 if v["unison"] else 0, 1),
+            ("Detune", "%d%%" % v["detune"], v["detune"], 100),
+            ("Spread", "%d%%" % v["spread"], v["spread"], 100),
+        ]
+        y = 18
+        for i, (label, val_str, val_num, val_max) in enumerate(rows):
             marker = ">" if i == self.sel else " "
-            star = "*" if self.editing and i == self.sel else " "
-            val = v[f]
-            if isinstance(val, bool):
-                val = "on" if val else "off"
-            d.text("%s%s %s:%s" % (marker, star, f[:7], str(val)), 0, y, 255)
-            y += 14
+            star = "*" if (self.editing and i == self.sel) else " "
+            d.text("%s%s%s" % (marker, star, label), 0, y, 255)
+            d.text(val_str, 60, y, 255)
+
+            # Mini bar
+            norm = clamp(val_num / val_max if val_max > 0 else 0, 0.0, 1.0)
+            bw = int(norm * 22)
+            d.rect(98, y + 1, 24, 7, 255)
+            if bw > 0:
+                d.fill_rect(98, y + 1, bw, 7, 255)
+            y += 20
+
+        d.hline(0, 104, 128, 255)
+        d.text("Stereo Engine Ready", 0, 110, 255)
+
+
+class MacrosPage(PageBase):
+    title = "Macros"
+
+    MACRO_NAMES = ["M1 Filter", "M2 Res", "M3 Env", "M4 FX"]
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.sel = 0
+
+    def on_event(self, ev):
+        vals = self.app.cfg["macros"]["values"]
+        if not self.editing:
+            if ev.delta != 0:
+                self.sel = (self.sel + ev.delta) % 4
+            if ev.click:
+                self.editing = True
+            if ev.long_press:
+                self.app.back_to_menu()
+            return
+
+        if ev.delta != 0:
+            vals[self.sel] = clamp(vals[self.sel] + ev.delta * 2, 0, 127)
+        if ev.click:
+            self.editing = False
+            self.app.save_cfg()
+        if ev.long_press:
+            self.editing = False
+            self.app.back_to_menu()
+
+    def render(self, d):
+        vals = self.app.cfg["macros"]["values"]
+        d.text("PERFORMANCE MACROS", 0, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        y = 18
+        for i in range(4):
+            marker = ">" if i == self.sel else " "
+            star = "*" if (self.editing and i == self.sel) else " "
+            val = vals[i]
+            d.text("%s%s%s" % (marker, star, self.MACRO_NAMES[i][:9]), 0, y, 255)
+            d.text("%03d" % val, 82, y, 255)
+
+            # Full-width level bar
+            norm = clamp(val / 127.0, 0.0, 1.0)
+            bw = int(norm * 116)
+            d.rect(6, y + 11, 118, 5, 255)
+            if bw > 0:
+                d.fill_rect(6, y + 11, bw, 5, 255)
+            y += 24
+
+
+class SystemPage(PageBase):
+    title = "System"
+    items = ["I2C Scan", "Control", "MIDI Ch", "Input", "Save Cfg", "Reload", "Panic"]
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.scan_cache = []
+        self._control_before_edit = None
+        self.offset = 0
+
+    def on_event(self, ev):
+        if not self.editing:
+            if ev.delta != 0:
+                self.sel = (self.sel + ev.delta) % len(self.items)
+            if ev.click:
+                item = self.items[self.sel]
+                if item == "I2C Scan":
+                    try:
+                        self.scan_cache = amyboard.get_i2c().scan()
+                        self.app.notice("I2C: " + ",".join([hex(x) for x in self.scan_cache]))
+                    except Exception:
+                        self.app.notice("I2C scan error")
+                elif item == "Control":
+                    self._control_before_edit = self.app.cfg["system"]["control_source"]
+                    self.editing = True
+                elif item == "MIDI Ch":
+                    self.editing = True
+                elif item == "Input":
+                    self.app.notice("Input: " + self.app.input_driver.name)
+                elif item == "Save Cfg":
+                    ok = self.app.save_cfg() and self.app.save_state()
+                    self.app.notice("Config Saved" if ok else "Save failed")
+                elif item == "Reload":
+                    self.app.pages["patches"].refresh()
+                    self.app.notice("Patches reloaded")
+                elif item == "Panic":
+                    self.app.panic()
+                    self.app.notice("All Notes OFF")
+            if ev.long_press:
+                self.app.back_to_menu()
+            return
+
+        if self.items[self.sel] == "Control":
+            if ev.delta != 0:
+                modes = self.app.control_sources
+                cur = self.app.cfg["system"]["control_source"]
+                idx = modes.index(cur) if cur in modes else 0
+                idx = (idx + ev.delta) % len(modes)
+                self.app.cfg["system"]["control_source"] = modes[idx]
+            if ev.click:
+                self.editing = False
+                self.app.apply_control_source(
+                    self.app.cfg["system"]["control_source"], save=True, show_notice=True
+                )
+            if ev.long_press:
+                if self._control_before_edit is not None:
+                    self.app.cfg["system"]["control_source"] = self._control_before_edit
+                self.editing = False
+                self.app.back_to_menu()
+            return
+
+        if self.items[self.sel] == "MIDI Ch":
+            if ev.delta != 0:
+                ch = self.app.cfg["system"]["midi_channel"]
+                self.app.cfg["system"]["midi_channel"] = clamp(ch + ev.delta, 1, 16)
+            if ev.click:
+                self.editing = False
+                self.app.save_cfg()
+            if ev.long_press:
+                self.editing = False
+                self.app.back_to_menu()
+
+    def render(self, d):
+        d.text("SYSTEM & DIAG", 0, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        visible_count = 6
+        if self.sel < self.offset:
+            self.offset = self.sel
+        elif self.sel >= self.offset + visible_count:
+            self.offset = self.sel - visible_count + 1
+
+        y = 18
+        start = self.offset
+        end = min(len(self.items), start + visible_count)
+        for i in range(start, end):
+            it = self.items[i]
+            marker = ">" if i == self.sel else " "
+            star = "*" if (self.editing and i == self.sel) else " "
+            line = it
+            if it == "Control":
+                line = "Ctrl:%s" % self.app.cfg["system"]["control_source"]
+            elif it == "MIDI Ch":
+                line = "MIDI Ch:%d" % self.app.cfg["system"]["midi_channel"]
+            elif it == "Input":
+                line = "In:%s" % self.app.input_driver.name[:8]
+            d.text("%s%s%s" % (marker, star, line[:15]), 0, y, 255)
+            y += 16
 
 
 class CVRoutingPage(PageBase):
@@ -2234,20 +2479,37 @@ class MenuApp:
 
     def render_menu(self):
         d = self.display
-        visible_count = 8
+        # 1. Eurorack Top Header Bar (y=0..12)
+        d.text("AMYBOARD", 0, 1, 255)
+        midi_ch = self.cfg["system"].get("midi_channel", 1)
+        d.text("[CH:%d]" % midi_ch, 84, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        # 2. Scrollable Menu Items (y=16..127)
+        visible_count = 7
         if self.menu_index < self.menu_offset:
             self.menu_offset = self.menu_index
         elif self.menu_index >= self.menu_offset + visible_count:
             self.menu_offset = self.menu_index - visible_count + 1
 
-        y = 2
+        y = 16
         start = self.menu_offset
         end = min(len(self.menu_items), start + visible_count)
         for i in range(start, end):
             item = self.menu_items[i]
-            marker = ">" if i == self.menu_index else " "
-            d.text(marker + item[:18], 0, y, 255)
-            y += 15
+            is_active = (i == self.menu_index)
+            marker = "> " if is_active else "  "
+            d.text(marker + item[:14], 0, y, 255)
+            y += 16
+
+        # 3. Right Scrollbar Track (x=125..127)
+        total_items = len(self.menu_items)
+        if total_items > visible_count:
+            track_h = 108
+            thumb_h = max(12, int((visible_count / total_items) * track_h))
+            thumb_y = 16 + int((self.menu_index / (total_items - 1)) * (track_h - thumb_h))
+            d.vline(126, 16, track_h, 255)
+            d.fill_rect(125, thumb_y, 3, thumb_h, 255)
 
     def render(self):
         d = self.display
@@ -2261,8 +2523,10 @@ class MenuApp:
 
         now = time.ticks_ms()
         if self.notice_msg and time.ticks_diff(self.notice_until, now) > 0:
-            d.fill_rect(0, 112, 128, 16, 0)
-            d.text(self.notice_msg[:21], 0, 114, 255)
+            # Framed notification toast box at bottom
+            d.fill_rect(2, 110, 124, 17, 0)
+            d.rect(2, 110, 124, 17, 255)
+            d.text(self.notice_msg[:15], 6, 115, 255)
 
         d.refresh()
 
