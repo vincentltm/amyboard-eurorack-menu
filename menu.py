@@ -1564,6 +1564,267 @@ class ScopePage(PageBase):
             d.text("Min:%.2f Max:%.2f" % (self.v_min, self.v_max), 0, 116, 255)
 
 
+class FXRackPage(PageBase):
+    title = "FX Rack"
+
+    ITEMS = [
+        ("REV LVL", "reverb_level", 0.0, 1.0, 0.05, "%d%%", 100),
+        ("REV DMP", "reverb_damp", 0.0, 1.0, 0.05, "%.2f", 1),
+        ("REV ROOM", "reverb_room", 0.0, 1.0, 0.05, "%.2f", 1),
+        ("CHO LVL", "chorus_level", 0.0, 1.0, 0.05, "%d%%", 100),
+        ("CHO DEL", "chorus_delay", 8, 64, 4, "%d smp", 1),
+        ("ECH LVL", "echo_level", 0.0, 1.0, 0.05, "%d%%", 100),
+        ("ECH TIME", "echo_time", 20, 1000, 25, "%d ms", 1),
+        ("ECH FDBK", "echo_feedback", 0.0, 0.95, 0.05, "%d%%", 100),
+        ("RESONANCE", "resonance", 0.7, 8.0, 0.2, "%.1f", 1),
+    ]
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.selected_idx = 0
+
+    def on_enter(self):
+        self.editing = False
+
+    def on_event(self, ev):
+        if ev.long_press:
+            self.app.back_to_menu()
+            return
+
+        if ev.click:
+            self.editing = not self.editing
+            if not self.editing:
+                self.app.save_state()
+            return
+
+        if ev.delta != 0:
+            if not self.editing:
+                self.selected_idx = (self.selected_idx + ev.delta) % len(self.ITEMS)
+            else:
+                label, key, v_min, v_max, step, fmt, mult = self.ITEMS[self.selected_idx]
+                fx_cfg = self.app.cfg.setdefault("fx", {})
+                cur = float(fx_cfg.get(key, DEFAULT_CFG["fx"].get(key, v_min)))
+                new_val = clamp(cur + ev.delta * step, v_min, v_max)
+                if isinstance(v_min, int) and isinstance(step, int):
+                    new_val = int(round(new_val))
+                fx_cfg[key] = new_val
+                self.app.apply_fx()
+
+    def render(self, d):
+        d.text("FX RACK (DSP)", 0, 1, 255)
+        mode_str = "EDIT" if self.editing else "SEL"
+        d.text("[%s]" % mode_str, 92, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        visible_count = 7
+        offset = clamp(self.selected_idx - 3, 0, max(0, len(self.ITEMS) - visible_count))
+        
+        y = 16
+        fx_cfg = self.app.cfg.setdefault("fx", {})
+        for i in range(offset, min(len(self.ITEMS), offset + visible_count)):
+            label, key, v_min, v_max, step, fmt, mult = self.ITEMS[i]
+            cur = float(fx_cfg.get(key, DEFAULT_CFG["fx"].get(key, v_min)))
+            is_sel = (i == self.selected_idx)
+            marker = ">" if is_sel else " "
+            star = "*" if (is_sel and self.editing) else " "
+
+            d.text("%s%s%s" % (marker, star, label), 0, y, 255)
+
+            val_disp = cur * mult
+            val_str = fmt % val_disp
+            d.text(val_str, 72, y, 255)
+
+            norm = clamp((cur - v_min) / (v_max - v_min) if v_max > v_min else 0.0, 0.0, 1.0)
+            bar_w = int(norm * 18)
+            d.rect(108, y + 1, 19, 7, 255)
+            if bar_w > 0:
+                d.fill_rect(108, y + 1, bar_w, 7, 255)
+
+            y += 14
+
+        d.hline(0, 116, 128, 255)
+        rev_on = fx_cfg.get("reverb_level", 0.0) > 0.01
+        cho_on = fx_cfg.get("chorus_level", 0.0) > 0.01
+        ech_on = fx_cfg.get("echo_level", 0.0) > 0.01
+        d.text("REV:%s CHO:%s ECH:%s" % ("ON" if rev_on else "--", "ON" if cho_on else "--", "ON" if ech_on else "--"), 0, 118, 255)
+
+
+def generate_euclidean(hits, steps):
+    if steps <= 0: return [0]
+    hits = max(0, min(steps, hits))
+    if hits == 0: return [0] * steps
+    if hits == steps: return [1] * steps
+    pattern = []
+    bucket = 0
+    for _ in range(steps):
+        bucket += hits
+        if bucket >= steps:
+            bucket -= steps
+            pattern.append(1)
+        else:
+            pattern.append(0)
+    return pattern
+
+
+class SequencerPage(PageBase):
+    title = "Sequencer"
+
+    SCALES = [
+        ("Min Pent", [0, 3, 5, 7, 10]),
+        ("Maj Pent", [0, 2, 4, 7, 9]),
+        ("Dorian",   [0, 2, 3, 5, 7, 9, 10]),
+        ("Minor",    [0, 2, 3, 5, 7, 8, 10]),
+        ("Major",    [0, 2, 4, 5, 7, 9, 11]),
+        ("Hirajoshi",[0, 2, 3, 7, 8]),
+        ("Insen",    [0, 1, 5, 7, 10]),
+        ("Blues",    [0, 3, 5, 6, 7, 10]),
+        ("WholeTone",[0, 2, 4, 6, 8, 10]),
+        ("Chromatic",[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+    ]
+    NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+    FIELDS = ["STATE", "BPM", "STEPS", "HITS", "ROTATE", "MUTATE", "SCALE", "ROOT", "OCT", "GATE"]
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.edit_field = 0
+        self.editing = False
+
+    def on_enter(self):
+        self.editing = False
+
+    def on_event(self, ev):
+        if ev.long_press:
+            self.app.back_to_menu()
+            return
+
+        seq = self.app.cfg.setdefault("sequencer", {})
+
+        if ev.click:
+            if self.edit_field == 0:
+                seq["running"] = not seq.get("running", False)
+                if not seq["running"]:
+                    self.app.sequencer_stop()
+            else:
+                self.editing = not self.editing
+            return
+
+        if ev.delta != 0:
+            if not self.editing:
+                self.edit_field = (self.edit_field + ev.delta) % len(self.FIELDS)
+            else:
+                field = self.FIELDS[self.edit_field]
+                if field == "STATE":
+                    seq["running"] = not seq.get("running", False)
+                    if not seq["running"]:
+                        self.app.sequencer_stop()
+                elif field == "BPM":
+                    bpm = seq.get("bpm", 120)
+                    if bpm == 0 and ev.delta > 0:
+                        seq["bpm"] = 40
+                    elif bpm <= 40 and ev.delta < 0:
+                        seq["bpm"] = 0
+                    else:
+                        seq["bpm"] = clamp(bpm + ev.delta * 2, 40, 240)
+                elif field == "STEPS":
+                    seq["steps"] = clamp(seq.get("steps", 16) + ev.delta, 2, 16)
+                    if seq.get("hits", 5) > seq["steps"]:
+                        seq["hits"] = seq["steps"]
+                elif field == "HITS":
+                    seq["hits"] = clamp(seq.get("hits", 5) + ev.delta, 0, seq.get("steps", 16))
+                elif field == "ROTATE":
+                    seq["rotate"] = (seq.get("rotate", 0) + ev.delta) % seq.get("steps", 16)
+                elif field == "MUTATE":
+                    seq["mutate"] = clamp(seq.get("mutate", 15) + ev.delta * 5, 0, 100)
+                elif field == "SCALE":
+                    cur_idx = seq.get("scale_idx", 0)
+                    seq["scale_idx"] = (cur_idx + ev.delta) % len(self.SCALES)
+                elif field == "ROOT":
+                    seq["root"] = clamp(seq.get("root", 48) + ev.delta, 24, 72)
+                elif field == "OCT":
+                    seq["octaves"] = clamp(seq.get("octaves", 2) + ev.delta, 1, 4)
+                elif field == "GATE":
+                    seq["gate"] = clamp(seq.get("gate", 50) + ev.delta * 5, 10, 90)
+
+    def render(self, d):
+        seq = self.app.cfg.setdefault("sequencer", {})
+        running = seq.get("running", False)
+        bpm = seq.get("bpm", 120)
+        steps = seq.get("steps", 16)
+        hits = seq.get("hits", 5)
+        rotate = seq.get("rotate", 0)
+        mutate = seq.get("mutate", 15)
+        scale_idx = seq.get("scale_idx", 0)
+        root = seq.get("root", 48)
+        octs = seq.get("octaves", 2)
+        gate = seq.get("gate", 50)
+
+        scale_name, _ = self.SCALES[scale_idx]
+
+        status_str = "[RUN]" if running else "[STP]"
+        bpm_str = "EXT" if bpm == 0 else ("%dBPM" % bpm)
+        d.text("%s %s" % (status_str, bpm_str), 0, 1, 255)
+        d.text("E(%d,%d)" % (hits, steps), 76, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        raw_euc = generate_euclidean(hits, steps)
+        euc = [raw_euc[(i - rotate) % steps] for i in range(steps)]
+        curr_step = self.app.seq_step % steps if running else -1
+
+        for i in range(steps):
+            col = i % 8
+            row = i // 8
+            bx = 4 + col * 15
+            by = 16 + row * 16
+
+            d.rect(bx, by, 13, 13, 255)
+
+            if euc[i]:
+                d.fill_rect(bx + 3, by + 3, 7, 7, 255)
+
+            if i == curr_step:
+                d.rect(bx - 1, by - 1, 15, 15, 255)
+                if not euc[i]:
+                    d.line(bx + 2, by + 2, bx + 10, by + 10, 255)
+                    d.line(bx + 2, by + 10, bx + 10, by + 2, 255)
+
+        root_name = self.NOTE_NAMES[root % 12]
+        root_oct = (root // 12) - 1
+        if running and self.app.seq_last_note >= 0:
+            ln = self.app.seq_last_note
+            ln_name = self.NOTE_NAMES[ln % 12]
+            ln_oct = (ln // 12) - 1
+            d.text("Step:%d Note:%s%d (%d)" % (curr_step + 1, ln_name, ln_oct, ln), 0, 50, 255)
+        else:
+            d.text("Scale:%s Key:%s%d" % (scale_name[:8], root_name, root_oct), 0, 50, 255)
+        d.hline(0, 60, 128, 255)
+
+        params = [
+            ("STATE", status_str),
+            ("BPM", bpm_str),
+            ("STEPS", "%d" % steps),
+            ("HITS", "%d" % hits),
+            ("ROT", "%d" % rotate),
+            ("MUTATE", "%d%%" % mutate),
+            ("SCALE", scale_name[:9]),
+            ("ROOT", "%s%d" % (root_name, root_oct)),
+            ("OCT", "%d" % octs),
+            ("GATE", "%d%%" % gate),
+        ]
+
+        visible_count = 4
+        offset = clamp(self.edit_field - 1, 0, max(0, len(params) - visible_count))
+        y = 64
+        for i in range(offset, min(len(params), offset + visible_count)):
+            pname, pval = params[i]
+            is_sel = (i == self.edit_field)
+            marker = ">" if is_sel else " "
+            star = "*" if (is_sel and self.editing) else " "
+            d.text("%s%s%s" % (marker, star, pname), 0, y, 255)
+            d.text(pval, 70, y, 255)
+            y += 15
+
+
 # -----------------------------
 # App
 # -----------------------------
@@ -1582,6 +1843,29 @@ DEFAULT_CFG = {
         "cv_pitch_scale": DEFAULT_CV_PITCH_SCALE,
         "cv_pitch_offset": DEFAULT_CV_PITCH_OFFSET,
     },
+    "fx": {
+        "reverb_level": 0.0,
+        "reverb_damp": 0.3,
+        "reverb_room": 0.5,
+        "chorus_level": 0.0,
+        "chorus_delay": 32,
+        "echo_level": 0.0,
+        "echo_time": 250,
+        "echo_feedback": 0.4,
+        "resonance": 1.0,
+    },
+    "sequencer": {
+        "running": False,
+        "bpm": 120,
+        "steps": 16,
+        "hits": 5,
+        "rotate": 0,
+        "mutate": 15,
+        "scale_idx": 0,
+        "root": 48,
+        "octaves": 2,
+        "gate": 50,
+    },
     "voice_mode": {"polyphony": 6, "unison": False, "detune": 12, "spread": 18},
     "cv_routing": {
         "routes": [
@@ -1597,7 +1881,7 @@ DEFAULT_STATE = {"menu_index": 0, "current_page": "menu"}
 
 
 class MenuApp:
-    menu_items = ["Preset Voice", "Scope", "Filt Type", "Filt Cut", "Patches", "Macros", "CV Routing", "Voice Mode", "System"]
+    menu_items = ["Preset Voice", "FX Rack", "Sequencer", "Scope", "Filt Type", "Filt Cut", "Patches", "Macros", "CV Routing", "Voice Mode", "System"]
 
     control_sources = list(CONTROL_SOURCE_OPTIONS)
 
@@ -1613,6 +1897,8 @@ class MenuApp:
 
         self.pages = {
             "preset voice": PresetVoicePage(self),
+            "fx rack": FXRackPage(self),
+            "sequencer": SequencerPage(self),
             "scope": ScopePage(self),
             "filt type": FilterTypePage(self),
             "filt cut": FilterCutoffPage(self),
@@ -1630,7 +1916,19 @@ class MenuApp:
         self.menu_offset = 0
         self.notice_msg = ""
         self.notice_until = 0
+
+        # Sequencer engine state
+        self.seq_step = 0
+        self.seq_last_tick = time.ticks_ms()
+        self.seq_last_note = -1
+        self.seq_gate_active = False
+        self.seq_gate_off_time = time.ticks_ms()
+        self.seq_ext_clock_prev = False
+        self.seq_turing_reg = 0xACE1
+
         self.apply_preset_voice(save=False, show_notice=False)
+        self.apply_fx()
+
     def _normalize_cfg(self):
         self.cfg = merge_missing(deep_copy(self.cfg), DEFAULT_CFG)
         try:
@@ -1938,6 +2236,120 @@ class MenuApp:
 
         d.refresh()
 
+    def apply_fx(self):
+        try:
+            import amy
+            fx = self.cfg.setdefault("fx", {})
+            rev_lvl = float(fx.get("reverb_level", 0.0))
+            rev_dmp = float(fx.get("reverb_damp", 0.3))
+            rev_room = float(fx.get("reverb_room", 0.5))
+            if rev_lvl > 0.001:
+                amy.reverb(rev_lvl, 5000, rev_dmp, rev_room)
+            else:
+                amy.reverb(0.0)
+
+            cho_lvl = float(fx.get("chorus_level", 0.0))
+            cho_del = int(fx.get("chorus_delay", 32))
+            if cho_lvl > 0.001:
+                amy.chorus(cho_lvl, cho_del)
+            else:
+                amy.chorus(0.0)
+
+            ech_lvl = float(fx.get("echo_level", 0.0))
+            ech_time = int(fx.get("echo_time", 250))
+            ech_fdbk = float(fx.get("echo_feedback", 0.4))
+            if ech_lvl > 0.001:
+                amy.echo(ech_lvl, ech_time, ech_fdbk)
+            else:
+                amy.echo(0.0)
+
+            p = self._preset_values()
+            res = float(fx.get("resonance", 1.0))
+            amy.send(synth=p["synth"], resonance=res)
+        except Exception:
+            pass
+
+    def sequencer_stop(self):
+        try:
+            import amy
+            p = self._preset_values()
+            amy.send(synth=p["synth"], vel=0)
+            self.seq_last_note = -1
+            self.seq_gate_active = False
+        except Exception:
+            pass
+
+    def tick_sequencer(self, now):
+        seq = self.cfg.setdefault("sequencer", {})
+        if not seq.get("running", False):
+            return
+
+        bpm = seq.get("bpm", 120)
+        steps = seq.get("steps", 16)
+        hits = seq.get("hits", 5)
+        rotate = seq.get("rotate", 0)
+        mutate_prob = seq.get("mutate", 15)
+        scale_idx = seq.get("scale_idx", 0)
+        root = seq.get("root", 48)
+        octs = seq.get("octaves", 2)
+        gate_pct = seq.get("gate", 50)
+
+        should_advance = False
+
+        if bpm > 0:
+            step_interval = int(15000.0 / bpm)
+            if time.ticks_diff(now, self.seq_last_tick) >= step_interval:
+                self.seq_last_tick = now
+                should_advance = True
+        else:
+            try:
+                gate_v = amyboard.cv_in(1)
+                gate_high = (gate_v >= 2.5)
+                if gate_high and not self.seq_ext_clock_prev:
+                    should_advance = True
+                self.seq_ext_clock_prev = gate_high
+            except Exception:
+                pass
+
+        if self.seq_gate_active and time.ticks_diff(now, self.seq_gate_off_time) >= 0:
+            try:
+                import amy
+                p = self._preset_values()
+                amy.send(synth=p["synth"], vel=0)
+            except Exception:
+                pass
+            self.seq_gate_active = False
+
+        if should_advance:
+            self.seq_step = (self.seq_step + 1) % steps
+            raw_euc = generate_euclidean(hits, steps)
+            is_hit = raw_euc[(self.seq_step - rotate) % steps]
+            
+            if is_hit:
+                import random
+                if random.randint(1, 100) <= mutate_prob:
+                    self.seq_turing_reg = (self.seq_turing_reg ^ 1)
+                bit0 = (self.seq_turing_reg & 1)
+                self.seq_turing_reg = ((self.seq_turing_reg >> 1) | (bit0 << 15)) & 0xFFFF
+                
+                scale_intervals = SequencerPage.SCALES[scale_idx][1]
+                val_8bit = (self.seq_turing_reg & 0xFF)
+                degree = val_8bit % len(scale_intervals)
+                octave_offset = (val_8bit // len(scale_intervals)) % octs
+                note = root + (octave_offset * 12) + scale_intervals[degree]
+                note = clamp(note, 0, 127)
+                
+                try:
+                    import amy
+                    p = self._preset_values()
+                    amy.send(synth=p["synth"], note=note, vel=1.0)
+                    self.seq_last_note = note
+                    self.seq_gate_active = True
+                    step_dur = int(15000.0 / bpm) if bpm > 0 else 120
+                    self.seq_gate_off_time = time.ticks_add(now, int(step_dur * gate_pct / 100.0))
+                except Exception:
+                    pass
+
     def run(self):
         last_save = time.ticks_ms()
         
@@ -1958,25 +2370,30 @@ class MenuApp:
             if ev.delta or ev.click or ev.long_press:
                 self.handle_event(ev)
 
-            try:
-                p = self._preset_values()
-                pitch_v = amyboard.cv_in(p["cv_pitch_input"])
-                gate_v = amyboard.cv_in(p["cv_gate_input"])
-                note = int(pitch_v * p["cv_pitch_scale"] + p["cv_pitch_offset"])
-                note = max(0, min(127, note))
-                gate_on = float(p.get("cv_gate_on", DEFAULT_CV_GATE_ON))
-                gate_off = float(p.get("cv_gate_off", DEFAULT_CV_GATE_OFF))
-                gate = gate_v >= (gate_off if self._gate_prev else gate_on)
-                import amy
-                if gate and (not self._gate_prev or note != self._last_note):
-                    amy.send(synth=p["synth"], note=note, vel=1)
-                    self._last_note = note
-                elif (not gate) and self._gate_prev:
-                    amy.send(synth=p["synth"], vel=0)
-                    self._last_note = -1
-                self._gate_prev = gate
-            except Exception:
-                pass
+            # 1. Tick Sequencer
+            self.tick_sequencer(now)
+
+            # 2. CV/Gate Input Processing (if Sequencer is not running)
+            if not self.cfg.get("sequencer", {}).get("running", False):
+                try:
+                    p = self._preset_values()
+                    pitch_v = amyboard.cv_in(p["cv_pitch_input"])
+                    gate_v = amyboard.cv_in(p["cv_gate_input"])
+                    note = int(pitch_v * p["cv_pitch_scale"] + p["cv_pitch_offset"])
+                    note = max(0, min(127, note))
+                    gate_on = float(p.get("cv_gate_on", DEFAULT_CV_GATE_ON))
+                    gate_off = float(p.get("cv_gate_off", DEFAULT_CV_GATE_OFF))
+                    gate = gate_v >= (gate_off if self._gate_prev else gate_on)
+                    import amy
+                    if gate and (not self._gate_prev or note != self._last_note):
+                        amy.send(synth=p["synth"], note=note, vel=1)
+                        self._last_note = note
+                    elif (not gate) and self._gate_prev:
+                        amy.send(synth=p["synth"], vel=0)
+                        self._last_note = -1
+                    self._gate_prev = gate
+                except Exception:
+                    pass
 
             self.render()
 
@@ -1984,7 +2401,8 @@ class MenuApp:
                 self.save_state()
                 last_save = now
 
-            time.sleep_ms(35)
+            seq_active = self.cfg.get("sequencer", {}).get("running", False)
+            time.sleep_ms(15 if seq_active else 35)
 
 
 def main():
