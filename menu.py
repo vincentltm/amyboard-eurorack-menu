@@ -1850,15 +1850,15 @@ class FXRackPage(PageBase):
 
     ITEMS = [
         ("EXT IN", "ext_in", 0, 100, 10, "%d%%", 1),
-        ("REV LVL", "reverb_level", 0.0, 1.0, 0.05, "%d%%", 100),
-        ("REV DMP", "reverb_damp", 0.0, 1.0, 0.05, "%.2f", 1),
-        ("REV ROOM", "reverb_room", 0.0, 1.0, 0.05, "%.2f", 1),
-        ("CHO LVL", "chorus_level", 0.0, 1.0, 0.05, "%d%%", 100),
-        ("CHO DEL", "chorus_delay", 8, 64, 4, "%d smp", 1),
-        ("ECH LVL", "echo_level", 0.0, 1.0, 0.05, "%d%%", 100),
-        ("ECH TIME", "echo_time", 20, 1000, 25, "%d ms", 1),
-        ("ECH FDBK", "echo_feedback", 0.0, 0.95, 0.05, "%d%%", 100),
-        ("RESONANCE", "resonance", 0.7, 8.0, 0.2, "%.1f", 1),
+        ("REV LV", "reverb_level", 0.0, 1.0, 0.05, "%d%%", 100),
+        ("REV DM", "reverb_damp", 0.0, 0.95, 0.05, "%.2f", 1),
+        ("REV RM", "reverb_room", 0.0, 0.95, 0.05, "%.2f", 1),
+        ("CHO LV", "chorus_level", 0.0, 1.0, 0.05, "%d%%", 100),
+        ("CHO DL", "chorus_delay", 8, 64, 4, "%d smp", 1),
+        ("ECH LV", "echo_level", 0.0, 1.0, 0.05, "%d%%", 100),
+        ("ECH TM", "echo_time", 20, 1000, 25, "%d ms", 1),
+        ("ECH FB", "echo_feedback", 0.0, 0.85, 0.05, "%d%%", 100),
+        ("RESON",  "resonance", 0.7, 8.0, 0.2, "%.1f", 1),
     ]
 
     def __init__(self, app):
@@ -1909,7 +1909,7 @@ class FXRackPage(PageBase):
             is_sel = (i == self.selected_idx)
             marker = ">" if is_sel else " "
 
-            d.text("%s%s" % (marker, label[:7]), 0, y, 255)
+            d.text("%s%s" % (marker, label[:6]), 0, y, 255)
 
             val_disp = cur * mult
             val_str = fmt % val_disp
@@ -2602,7 +2602,10 @@ class MenuApp:
             rev_dmp = float(fx.get("reverb_damp", 0.3))
             rev_room = float(fx.get("reverb_room", 0.5))
             if rev_lvl > 0.001:
-                amy.reverb(rev_lvl, 5000, rev_dmp, rev_room)
+                # AMY reverb: (level, liveness, damping, xover_hz)
+                liveness = clamp(rev_room, 0.0, 0.95)
+                damping = clamp(rev_dmp, 0.0, 0.95)
+                amy.reverb(rev_lvl, liveness, damping, 3000)
             else:
                 amy.reverb(0.0)
 
@@ -2615,9 +2618,12 @@ class MenuApp:
 
             ech_lvl = float(fx.get("echo_level", 0.0))
             ech_time = int(fx.get("echo_time", 250))
-            ech_fdbk = float(fx.get("echo_feedback", 0.4))
+            ech_fdbk = clamp(float(fx.get("echo_feedback", 0.4)), 0.0, 0.85)
             if ech_lvl > 0.001:
-                amy.echo(ech_lvl, ech_time, ech_fdbk)
+                # AMY echo: (level, delay_ms_l, delay_ms_r, feedback_l, feedback_r)
+                delay_l = ech_time
+                delay_r = int(ech_time * 0.75) if ech_time > 40 else ech_time
+                amy.echo(ech_lvl, delay_l, delay_r, ech_fdbk, ech_fdbk)
             else:
                 amy.echo(0.0)
 
