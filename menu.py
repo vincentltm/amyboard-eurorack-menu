@@ -1073,24 +1073,39 @@ class VoiceModePage(PageBase):
 class CVRoutingPage(PageBase):
     title = "CV Routing"
 
-    targets = [
+    IN_TARGETS = [
         "none",
         "pitch",
         "filter",
         "amp",
+        "reverb",
+        "chorus",
+        "echo",
         "macro1",
         "macro2",
         "macro3",
         "macro4",
     ]
-    fields = ["input", "target", "amount", "polarity", "smooth"]
+    OUT1_TARGETS = ["pitch", "sequencer", "lfo1", "envelope", "none"]
+    OUT2_TARGETS = ["gate", "seq_clock", "velocity", "lfo2", "none"]
+
+    CHANNELS = ["CV1 IN", "CV2 IN", "CV1 OUT", "CV2 OUT"]
+    fields = ["channel", "target", "amount", "polarity", "smooth"]
 
     def __init__(self, app):
         super().__init__(app)
-        self.cv_idx = 0
+        self.ch_idx = 0
 
     def _route(self):
-        return self.app.cfg["cv_routing"]["routes"][self.cv_idx]
+        routes = self.app.cfg["cv_routing"].setdefault("routes", [
+            {"target": "none", "amount": 0, "polarity": 1, "smooth": 20},
+            {"target": "none", "amount": 0, "polarity": 1, "smooth": 20},
+            {"target": "pitch", "amount": 100, "polarity": 1, "smooth": 0},
+            {"target": "gate", "amount": 100, "polarity": 1, "smooth": 0},
+        ])
+        while len(routes) < 4:
+            routes.append({"target": "none", "amount": 0, "polarity": 1, "smooth": 0})
+        return routes[self.ch_idx]
 
     def on_event(self, ev):
         r = self._route()
@@ -1106,18 +1121,24 @@ class CVRoutingPage(PageBase):
 
         f = self.fields[self.sel]
         if ev.delta != 0:
-            if f == "input":
-                self.cv_idx = (self.cv_idx + ev.delta) % 2
+            if f == "channel":
+                self.ch_idx = (self.ch_idx + ev.delta) % len(self.CHANNELS)
             elif f == "target":
-                idx = self.targets.index(r["target"]) if r["target"] in self.targets else 0
-                idx = (idx + ev.delta) % len(self.targets)
-                r["target"] = self.targets[idx]
+                if self.ch_idx < 2:
+                    t_list = self.IN_TARGETS
+                elif self.ch_idx == 2:
+                    t_list = self.OUT1_TARGETS
+                else:
+                    t_list = self.OUT2_TARGETS
+                idx = t_list.index(r["target"]) if r["target"] in t_list else 0
+                idx = (idx + ev.delta) % len(t_list)
+                r["target"] = t_list[idx]
             elif f == "amount":
-                r["amount"] = clamp(r["amount"] + ev.delta, -100, 100)
+                r["amount"] = clamp(r["amount"] + ev.delta * 5, -100, 100)
             elif f == "polarity":
                 r["polarity"] = -1 if r["polarity"] > 0 else 1
             elif f == "smooth":
-                r["smooth"] = clamp(r["smooth"] + ev.delta, 0, 100)
+                r["smooth"] = clamp(r["smooth"] + ev.delta * 5, 0, 100)
 
         if ev.click:
             self.editing = False
@@ -1128,20 +1149,28 @@ class CVRoutingPage(PageBase):
 
     def render(self, d):
         r = self._route()
-        d.text("CV Routing", 0, 0, 255)
+        ch_name = self.CHANNELS[self.ch_idx]
+        d.text("CV ROUTING", 0, 1, 255)
+        d.hline(0, 12, 128, 255)
+
         rows = [
-            "input:CV%d" % (self.cv_idx + 1),
-            "target:%s" % r["target"],
-            "amount:%d" % r["amount"],
-            "polarity:%s" % ("+" if r["polarity"] > 0 else "-"),
-            "smooth:%d" % r["smooth"],
+            ("Chan", ch_name),
+            ("Target", r["target"][:9]),
+            ("Amount", "%d%%" % r["amount"]),
+            ("Polar", "+" if r["polarity"] > 0 else "-"),
+            ("Smooth", "%d" % r["smooth"]),
         ]
-        y = 14
-        for i, row in enumerate(rows):
+        y = 16
+        for i, (label, val) in enumerate(rows):
             marker = ">" if i == self.sel else " "
             star = "*" if self.editing and i == self.sel else " "
-            d.text("%s%s %s" % (marker, star, row[:18]), 0, y, 255)
-            y += 14
+            d.text("%s%s%s" % (marker, star, label), 0, y, 255)
+            d.text(val, 64, y, 255)
+            y += 16
+
+        d.hline(0, 104, 128, 255)
+        is_out = "OUT" in ch_name
+        d.text("Mode: %s" % ("Eurorack OUT" if is_out else "Mod IN"), 0, 108, 255)
 
 
 class MacrosPage(PageBase):
@@ -1568,6 +1597,7 @@ class FXRackPage(PageBase):
     title = "FX Rack"
 
     ITEMS = [
+        ("EXT IN", "ext_in", 0, 100, 10, "%d%%", 1),
         ("REV LVL", "reverb_level", 0.0, 1.0, 0.05, "%d%%", 100),
         ("REV DMP", "reverb_damp", 0.0, 1.0, 0.05, "%.2f", 1),
         ("REV ROOM", "reverb_room", 0.0, 1.0, 0.05, "%.2f", 1),
@@ -1843,6 +1873,7 @@ DEFAULT_CFG = {
         "cv_pitch_offset": DEFAULT_CV_PITCH_OFFSET,
     },
     "fx": {
+        "ext_in": 0,
         "reverb_level": 0.0,
         "reverb_damp": 0.3,
         "reverb_room": 0.5,
@@ -2239,6 +2270,19 @@ class MenuApp:
         try:
             import amy
             fx = self.cfg.setdefault("fx", {})
+            
+            # External Audio In Live Thru
+            ext_in = int(fx.get("ext_in", 0))
+            if ext_in > 0:
+                ext_gain = ext_in / 100.0
+                wave_in = getattr(amy, "AUDIO_IN0", getattr(amy, "AUDIO_EXT0", 0))
+                amy.send(osc=30, wave=wave_in, vel=ext_gain)
+            else:
+                try:
+                    amy.send(osc=30, vel=0)
+                except Exception:
+                    pass
+
             rev_lvl = float(fx.get("reverb_level", 0.0))
             rev_dmp = float(fx.get("reverb_damp", 0.3))
             rev_room = float(fx.get("reverb_room", 0.5))
