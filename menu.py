@@ -2001,7 +2001,7 @@ class ScopePage(PageBase):
     SCALES = ["5V", "10V", "+/-5V"]
     SHORT_SCALE = ["5V", "10V", "+-5"]
     TIME_SCALES = ["0.5m", "1ms", "2ms", "5ms", "10m"]
-    TIME_DELAYS_US = [35, 80, 180, 450, 1100]
+    TIME_DELAYS_US = [0, 5, 10, 20, 40]
     TIME_STRIDES = [1, 2, 3, 4, 6]
 
     NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
@@ -2015,8 +2015,8 @@ class ScopePage(PageBase):
 
         self.edit_field = 0  # 0=Source, 1=Volt Scale, 2=Time Scale, 3=Hold
 
-        # Data buffers (120 points wide to fit inside x=4..123)
-        self.buf_width = 120
+        # Data buffers (60 points wide for fast rendering)
+        self.buf_width = 60
         self.roll_cv1 = [0.0] * self.buf_width
         self.roll_cv2 = [0.0] * self.buf_width
         self.last_burst = [0.0] * self.buf_width
@@ -2063,9 +2063,10 @@ class ScopePage(PageBase):
         buf = []
         delay = self.TIME_DELAYS_US[self.time_idx]
         try:
-            for _ in range(self.buf_width + 24):
+            for _ in range(self.buf_width + 8):
                 buf.append(float(amyboard.cv_in(cv_channel)))
-                time.sleep_us(delay)
+                if delay > 0:
+                    time.sleep_us(delay)
         except Exception:
             pass
         return buf
@@ -2734,6 +2735,7 @@ class MenuApp:
         self.menu_offset = 0
         self.notice_msg = ""
         self.notice_until = 0
+        self.needs_render = True
 
         # Engines
         self.seq_step = 0
@@ -3027,6 +3029,7 @@ class MenuApp:
             self.page_stack = []
         self.in_page = True
         self.current_page_key = key
+        self.needs_render = True
         p = self.current_page()
         if p:
             p.on_enter()
@@ -3041,7 +3044,7 @@ class MenuApp:
         else:
             self.in_page = False
             self.current_page_key = None
-        self.save_state()
+        self.needs_render = True
 
     def handle_event(self, ev):
         if (not self.in_page) and ev.long_press:
@@ -3066,13 +3069,13 @@ class MenuApp:
         d.text("AMYBOARD EURORACK", 0, 1, 255)
         d.hline(0, 12, 128, 255)
 
-        visible_count = 7
+        visible_count = 6
         if self.menu_index < self.menu_offset:
             self.menu_offset = self.menu_index
         elif self.menu_index >= self.menu_offset + visible_count:
             self.menu_offset = self.menu_index - visible_count + 1
 
-        y = 16
+        y = 18
         start = self.menu_offset
         end = min(len(self.menu_items), start + visible_count)
         for i in range(start, end):
@@ -3080,14 +3083,14 @@ class MenuApp:
             is_active = (i == self.menu_index)
             marker = ">" if is_active else " "
             d.text("%s %s" % (marker, item[:13]), 0, y, 255)
-            y += 16
+            y += 18
 
         total_items = len(self.menu_items)
         if total_items > visible_count:
-            track_h = 108
+            track_h = 104
             thumb_h = max(12, int((visible_count / total_items) * track_h))
-            thumb_y = 16 + int((self.menu_index / (total_items - 1)) * (track_h - thumb_h))
-            d.vline(126, 16, track_h, 255)
+            thumb_y = 18 + int((self.menu_index / (total_items - 1)) * (track_h - thumb_h))
+            d.vline(126, 18, track_h, 255)
             d.fill_rect(125, thumb_y, 3, thumb_h, 255)
 
     def render(self):
@@ -3214,8 +3217,12 @@ class MenuApp:
 
         if bpm > 0:
             step_interval = int(15000.0 / bpm)
-            if time.ticks_diff(now, self.seq_last_tick) >= step_interval:
-                self.seq_last_tick = now
+            diff = time.ticks_diff(now, self.seq_last_tick)
+            if diff >= step_interval:
+                if diff > step_interval * 3:
+                    self.seq_last_tick = now
+                else:
+                    self.seq_last_tick = time.ticks_add(self.seq_last_tick, step_interval)
                 should_advance = True
         else:
             try:
@@ -3279,8 +3286,12 @@ class MenuApp:
         if bpm <= 0:
             bpm = 120
         step_interval = int(15000.0 / bpm)
-        if time.ticks_diff(now, self.drum_last_tick) >= step_interval:
-            self.drum_last_tick = now
+        diff = time.ticks_diff(now, self.drum_last_tick)
+        if diff >= step_interval:
+            if diff > step_interval * 3:
+                self.drum_last_tick = now
+            else:
+                self.drum_last_tick = time.ticks_add(self.drum_last_tick, step_interval)
             self.drum_step = (self.drum_step + 1) % 16
             
             tracks = drums.get("tracks", [])
@@ -3417,19 +3428,20 @@ class MenuApp:
             is_anim = self.cfg.get("sequencer", {}).get("running", False) or \
                       self.cfg.get("drums", {}).get("running", False) or \
                       self.current_page_key in ("scope", "lfos")
-            render_interval = 40 if is_anim else 150
+            render_interval = 40 if is_anim else 100
 
-            if needs_render or time.ticks_diff(now, last_render) >= render_interval:
+            if self.needs_render or time.ticks_diff(now, last_render) >= render_interval:
                 self.render()
                 last_render = now
-                needs_render = False
+                self.needs_render = False
 
-            # 6. Periodic State Save & Memory Cleanup
-            if time.ticks_diff(now, last_save) > 10000:
-                self.save_state()
+            # 6. Periodic State Save & Memory Cleanup (Only when not in heavy playback)
+            if time.ticks_diff(now, last_save) > 15000:
+                if not (self.cfg.get("sequencer", {}).get("running", False) or self.cfg.get("drums", {}).get("running", False)):
+                    self.save_state()
                 last_save = now
 
-            if time.ticks_diff(now, last_gc) > 20000:
+            if time.ticks_diff(now, last_gc) > 30000:
                 try:
                     import gc
                     gc.collect()
@@ -3437,7 +3449,7 @@ class MenuApp:
                     pass
                 last_gc = now
 
-            # Ultra-short yield
+            # Short yield
             time.sleep_ms(1)
 
 
