@@ -1284,8 +1284,8 @@ class SystemPage(PageBase):
 class ScopePage(PageBase):
     title = "Scope"
 
-    SOURCES = ["AUDIO CV1", "AUDIO CV2", "CV1 ROLL", "CV2 ROLL", "DUAL", "SYNTH"]
-    SHORT_SRC = ["AU1", "AU2", "CV1", "CV2", "DUL", "VOX"]
+    SOURCES = ["AUDIO CV1", "AUDIO CV2", "CV1 ROLL", "CV2 ROLL", "DUAL"]
+    SHORT_SRC = ["AU1", "AU2", "CV1", "CV2", "DUL"]
     SCALES = ["5V", "10V", "+/-5V"]
     SHORT_SCALE = ["5V", "10V", "+-5"]
     TRIGGERS = ["AUTO", "NORM", "FREE"]
@@ -1307,8 +1307,6 @@ class ScopePage(PageBase):
         self.roll_cv1 = [0.0] * self.buf_width
         self.roll_cv2 = [0.0] * self.buf_width
         self.last_burst = [0.0] * self.buf_width
-        self.synth_phase = 0.0
-        self.vox_amp = 0.0
 
         self.last_v = 0.0
         self.v_min = 0.0
@@ -1499,50 +1497,6 @@ class ScopePage(PageBase):
                 d.line(x0, y_prev2, x1, y_curr2, 255)
                 y_prev2 = y_curr2
 
-        elif src == 5:  # SYNTH (Voice Preview)
-            import math
-            is_active = bool(self.app._gate_prev)
-            target_amp = 1.0 if is_active else 0.0
-
-            if not self.hold:
-                self.vox_amp += (target_amp - self.vox_amp) * 0.4
-                if self.vox_amp < 0.02:
-                    self.vox_amp = 0.0
-
-            scale_mode = self.SCALES[self.scale_idx]
-            base_v = 0.0 if scale_mode == "+/-5V" else (2.5 if scale_mode == "5V" else 5.0)
-
-            synth_wave = []
-            note = self.app._last_note if self.app._last_note >= 0 else 60
-            freq_factor = clamp(0.08 + (note - 36) * 0.003, 0.05, 0.45)
-            cutoff = self.app._preset_values().get("filter_cutoff", DEFAULT_FILTER_CUTOFF)
-            harmonics = clamp(cutoff / 3500.0, 0.0, 1.0)
-
-            for i in range(self.buf_width):
-                if self.vox_amp > 0.0:
-                    t = self.synth_phase + (i * freq_factor)
-                    s = math.sin(t) + (0.35 * harmonics) * math.sin(2.0 * t) + (0.18 * harmonics) * math.sin(3.0 * t)
-                    v = base_v + (s * 2.0 * self.vox_amp)
-                else:
-                    v = base_v
-                synth_wave.append(v)
-
-            if not self.hold and self.vox_amp > 0.0:
-                self.synth_phase = (self.synth_phase + 0.4) % (2.0 * math.pi)
-
-            self.last_v = synth_wave[-1]
-            self.v_min = min(synth_wave)
-            self.v_max = max(synth_wave)
-            self.v_pp = self.v_max - self.v_min
-
-            y_prev = self._map_y(synth_wave[0], 16, 98)
-            for i in range(1, len(synth_wave)):
-                x0 = 3 + i - 1
-                x1 = 3 + i
-                y_curr = self._map_y(synth_wave[i], 16, 98)
-                d.line(x0, y_prev, x1, y_curr, 255)
-                y_prev = y_curr
-
         # 4. Telemetry Footer (y=103..127)
         d.text("V:%.2fV P-P:%.2fV" % (self.last_v, self.v_pp), 0, 103, 255)
         if src in (0, 2):  # CV1 / Pitch mode -> show 1V/Oct note
@@ -1551,14 +1505,6 @@ class ScopePage(PageBase):
         elif src in (1, 3):  # CV2 / Gate mode -> show Gate state
             gate_state = "HIGH" if self.last_v >= DEFAULT_CV_GATE_ON else "LOW"
             d.text("Gate:%s (%.2fV)" % (gate_state, self.last_v), 0, 116, 255)
-        elif src == 5:  # VOX
-            if self.app._gate_prev and self.app._last_note >= 0:
-                note_i = int(clamp(self.app._last_note, 0, 127))
-                octave = (note_i // 12) - 1
-                name = self.NOTE_NAMES[note_i % 12]
-                d.text("Voice: %s%d ACTIVE" % (name, octave), 0, 116, 255)
-            else:
-                d.text("Voice: IDLE (No Gate)", 0, 116, 255)
         else:
             d.text("Min:%.2f Max:%.2f" % (self.v_min, self.v_max), 0, 116, 255)
 
