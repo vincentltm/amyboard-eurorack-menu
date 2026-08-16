@@ -1284,8 +1284,8 @@ class SystemPage(PageBase):
 class ScopePage(PageBase):
     title = "Scope"
 
-    SOURCES = ["AUDIO CV1", "AUDIO CV2", "CV1 ROLL", "CV2 ROLL", "DUAL", "SYNTH OUT"]
-    SHORT_SRC = ["AU1", "AU2", "CV1", "CV2", "DUL", "VOX"]
+    SOURCES = ["AUDIO CV1", "AUDIO CV2", "CV1 ROLL", "CV2 ROLL", "DUAL", "AMY OUT"]
+    SHORT_SRC = ["AU1", "AU2", "CV1", "CV2", "DUL", "AMY"]
     SCALES = ["5V", "10V", "+/-5V"]
     SHORT_SCALE = ["5V", "10V", "+-5"]
     TRIGGERS = ["AUTO", "NORM", "FREE"]
