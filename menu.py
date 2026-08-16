@@ -828,6 +828,508 @@ class PageBase:
         d.text(self.title, 0, 0, 255)
 
 
+class GroupPage(PageBase):
+    def __init__(self, app, title, items, page_keys):
+        super().__init__(app)
+        self.title = title
+        self.items = items
+        self.page_keys = page_keys
+        self.offset = 0
+
+    def on_enter(self):
+        self.sel = 0
+        self.offset = 0
+
+    def on_event(self, ev):
+        if ev.long_press:
+            self.app.back_to_menu()
+            return
+        if ev.delta != 0:
+            self.sel = (self.sel + ev.delta) % len(self.items)
+            if self.sel < self.offset:
+                self.offset = self.sel
+            elif self.sel >= self.offset + 6:
+                self.offset = self.sel - 5
+        if ev.click:
+            key = self.page_keys[self.sel]
+            self.app.open_page(key)
+
+    def render(self, d):
+        d.text(self.title.upper(), 0, 1, 255)
+        d.hline(0, 12, 128, 255)
+        visible_count = 6
+        start = self.offset
+        end = min(len(self.items), start + visible_count)
+        y = 18
+        for i in range(start, end):
+            marker = "> " if i == self.sel else "  "
+            d.text(marker + self.items[i][:14], 0, y, 255)
+            y += 16
+
+        if len(self.items) > visible_count:
+            track_h = 96
+            thumb_h = max(12, int((visible_count / len(self.items)) * track_h))
+            thumb_y = 18 + int((self.sel / (len(self.items) - 1)) * (track_h - thumb_h))
+            d.vline(126, 18, track_h, 255)
+            d.fill_rect(125, thumb_y, 3, thumb_h, 255)
+
+
+class PerformPage(PageBase):
+    title = "Performance"
+
+    def on_event(self, ev):
+        if ev.long_press:
+            self.app.back_to_menu()
+            return
+        if ev.click:
+            seq = self.app.cfg.setdefault("sequencer", {})
+            seq["running"] = not seq.get("running", False)
+            if not seq["running"]:
+                self.app.sequencer_stop()
+        if ev.delta != 0:
+            p = self.app._preset_values()
+            p["patch"] = clamp(p["patch"] + ev.delta, BUILTIN_PATCH_MIN, BUILTIN_PATCH_MAX)
+            try:
+                import amy
+                amy.send(synth=p["synth"], patch=p["patch"], note=60, vel=0.75)
+                self.app.audition_off_time = time.ticks_add(time.ticks_ms(), 120)
+            except Exception:
+                pass
+
+    def render(self, d):
+        p = self.app._preset_values()
+        seq = self.app.cfg.setdefault("sequencer", {})
+        macros = self.app.cfg.setdefault("macros", {}).get("values", [64, 64, 64, 64])
+        pname = self.app.patch_label(p["patch"])
+
+        # 1. Top Ribbon: Patch & Transport State (y=0..12)
+        status_str = "RUN" if seq.get("running", False) else "STP"
+        d.text("[%s] #%03d" % (status_str, p["patch"]), 0, 1, 255)
+        d.text(pname[:7], 72, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        # 2. Left Macro Meters: M1 & M2 (x=0..12, y=16..84)
+        for idx, mx in enumerate([0, 7]):
+            val = macros[idx]
+            norm = clamp(val / 127.0, 0.0, 1.0)
+            bh = int(norm * 64)
+            d.rect(mx, 16, 5, 68, 255)
+            if bh > 0:
+                d.fill_rect(mx, 84 - bh, 5, bh, 255)
+
+        # 3. Right Macro Meters: M3 & M4 (x=115..127, y=16..84)
+        for idx, mx in enumerate([115, 122]):
+            val = macros[idx + 2]
+            norm = clamp(val / 127.0, 0.0, 1.0)
+            bh = int(norm * 64)
+            d.rect(mx, 16, 5, 68, 255)
+            if bh > 0:
+                d.fill_rect(mx, 84 - bh, 5, bh, 255)
+
+        # 4. Center Audio Scope (x=16..112, y=16..84)
+        d.rect(15, 16, 97, 68, 255)
+        for x in range(17, 110, 4):
+            d.pixel(x, 50, 255)
+
+        try:
+            import struct, amy
+            buf = amy.get_output_buffer()
+            if buf:
+                all_s = struct.unpack("<512h", buf)
+                stride = 8
+                pts = [all_s[i] / 32768.0 for i in range(0, min(len(all_s), 48 * stride * 2), 2 * stride)]
+                y_prev = 50
+                for i in range(min(48, len(pts))):
+                    x0 = 17 + i * 2
+                    y_curr = clamp(int(50 - pts[i] * 28), 18, 82)
+                    if i > 0:
+                        d.line(x0 - 2, y_prev, x0, y_curr, 255)
+                    y_prev = y_curr
+        except Exception:
+            pass
+
+        # 5. Bottom Ribbon: Sequencer Step Track (y=88..127)
+        d.hline(0, 88, 128, 255)
+        bpm = seq.get("bpm", 120)
+        d.text("BPM:%s" % ("EXT" if bpm == 0 else "%d" % bpm), 0, 92, 255)
+        if self.app.seq_last_note >= 0:
+            n_name = SequencerPage.NOTE_NAMES[self.app.seq_last_note % 12]
+            n_oct = (self.app.seq_last_note // 12) - 1
+            d.text("NOTE:%s%d" % (n_name, n_oct), 64, 92, 255)
+        else:
+            d.text("VOX:%d" % p.get("num_voices", 1), 76, 92, 255)
+
+        curr_step = self.app.seq_step % 16 if seq.get("running", False) else -1
+        for i in range(16):
+            sx = 4 + i * 7
+            sy = 108
+            d.rect(sx, sy, 5, 5, 255)
+            if i == curr_step:
+                d.fill_rect(sx, sy, 5, 5, 255)
+
+
+class DrumMachinePage(PageBase):
+    title = "Drums"
+    TRACK_NAMES = ["KICK", "SNARE", "HIHAT", "PERC"]
+    FIELDS = ["TRACK", "STATE", "BPM", "HITS", "STEPS", "ROTATE", "MUTE", "VOL"]
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.track_idx = 0
+        self.edit_field = 0
+        self.editing = False
+
+    def on_event(self, ev):
+        if ev.long_press:
+            self.app.back_to_menu()
+            return
+        
+        drums = self.app.cfg.setdefault("drums", {
+            "running": False,
+            "bpm": 120,
+            "tracks": [
+                {"hits": 4, "steps": 16, "rotate": 0, "mute": False, "vol": 90},
+                {"hits": 2, "steps": 16, "rotate": 4, "mute": False, "vol": 85},
+                {"hits": 8, "steps": 16, "rotate": 0, "mute": False, "vol": 70},
+                {"hits": 3, "steps": 12, "rotate": 2, "mute": False, "vol": 75},
+            ]
+        })
+        t = drums["tracks"][self.track_idx]
+
+        if ev.click:
+            if self.edit_field == 0:
+                self.track_idx = (self.track_idx + 1) % 4
+            elif self.edit_field == 1:
+                drums["running"] = not drums.get("running", False)
+            else:
+                self.editing = not self.editing
+            return
+
+        if ev.delta != 0:
+            if not self.editing:
+                self.edit_field = (self.edit_field + ev.delta) % len(self.FIELDS)
+            else:
+                f = self.FIELDS[self.edit_field]
+                if f == "TRACK":
+                    self.track_idx = (self.track_idx + ev.delta) % 4
+                elif f == "STATE":
+                    drums["running"] = not drums.get("running", False)
+                elif f == "BPM":
+                    drums["bpm"] = clamp(drums.get("bpm", 120) + ev.delta * 2, 40, 240)
+                elif f == "HITS":
+                    t["hits"] = clamp(t.get("hits", 4) + ev.delta, 0, t.get("steps", 16))
+                elif f == "STEPS":
+                    t["steps"] = clamp(t.get("steps", 16) + ev.delta, 2, 16)
+                    if t["hits"] > t["steps"]: t["hits"] = t["steps"]
+                elif f == "ROTATE":
+                    t["rotate"] = (t.get("rotate", 0) + ev.delta) % t.get("steps", 16)
+                elif f == "MUTE":
+                    t["mute"] = not t.get("mute", False)
+                elif f == "VOL":
+                    t["vol"] = clamp(t.get("vol", 80) + ev.delta * 5, 0, 100)
+
+    def render(self, d):
+        drums = self.app.cfg.setdefault("drums", {
+            "running": False, "bpm": 120,
+            "tracks": [
+                {"hits": 4, "steps": 16, "rotate": 0, "mute": False, "vol": 90},
+                {"hits": 2, "steps": 16, "rotate": 4, "mute": False, "vol": 85},
+                {"hits": 8, "steps": 16, "rotate": 0, "mute": False, "vol": 70},
+                {"hits": 3, "steps": 12, "rotate": 2, "mute": False, "vol": 75},
+            ]
+        })
+        running = drums.get("running", False)
+        bpm = drums.get("bpm", 120)
+
+        # 1. Header (y=0..12)
+        d.text("DRUMS %s" % ("[RUN]" if running else "[STP]"), 0, 1, 255)
+        d.text("%dBPM" % bpm, 76, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        # 2. 4 Track Matrix Rows (y=16..68)
+        curr_step = self.app.drum_step if running else -1
+        for tidx in range(4):
+            t = drums["tracks"][tidx]
+            ty = 16 + tidx * 13
+            is_cur = (tidx == self.track_idx)
+            marker = ">" if is_cur else " "
+            name_short = self.TRACK_NAMES[tidx][:2]
+            mute_str = "M" if t.get("mute", False) else " "
+            d.text("%s%s%s" % (marker, name_short, mute_str), 0, ty, 255)
+
+            hits = t.get("hits", 4)
+            steps = t.get("steps", 16)
+            rot = t.get("rotate", 0)
+            raw = generate_euclidean(hits, steps)
+            euc = [raw[(i - rot) % steps] for i in range(steps)]
+
+            for step_i in range(steps):
+                px = 32 + step_i * 6
+                d.rect(px, ty + 1, 5, 6, 255)
+                if euc[step_i]:
+                    d.fill_rect(px + 1, ty + 2, 3, 4, 255)
+                if (curr_step % steps) == step_i and running:
+                    d.vline(px + 2, ty, 8, 255)
+
+        d.hline(0, 72, 128, 255)
+
+        # 3. Selected Track Parameter Editor (y=76..127)
+        t = drums["tracks"][self.track_idx]
+        tname = self.TRACK_NAMES[self.track_idx]
+        params = [
+            ("TRK", tname),
+            ("HITS", "%d/%d" % (t.get("hits", 4), t.get("steps", 16))),
+            ("ROT", "%d" % t.get("rotate", 0)),
+            ("MUTE", "YES" if t.get("mute", False) else "NO"),
+            ("VOL", "%d%%" % t.get("vol", 80)),
+        ]
+        
+        visible_count = 3
+        offset = clamp(self.edit_field - 3, 0, max(0, len(params) - visible_count))
+        y = 78
+        for i in range(offset, min(len(params), offset + visible_count)):
+            pname, pval = params[i]
+            is_sel = (i + 3 == self.edit_field)
+            marker = ">" if is_sel else " "
+            star = "*" if (is_sel and self.editing) else " "
+            d.text("%s%s%s" % (marker, star, pname), 0, y, 255)
+            d.text(pval, 64, y, 255)
+            y += 16
+
+
+class EnvPage(PageBase):
+    title = "ADSR Envelope"
+    FIELDS = ["TARGET", "ATTACK", "DECAY", "SUSTAIN", "RELEASE"]
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.sel = 0
+        self.editing = False
+
+    def _env(self):
+        return self.app.cfg.setdefault("envelope", {
+            "target": "AMP",
+            "attack": 15,
+            "decay": 250,
+            "sustain": 70,
+            "release": 450,
+        })
+
+    def on_event(self, ev):
+        if ev.long_press:
+            self.app.back_to_menu()
+            return
+        env = self._env()
+        if ev.click:
+            self.editing = not self.editing
+            if not self.editing:
+                self.app.apply_envelope()
+                self.app.save_state()
+            return
+        if ev.delta != 0:
+            if not self.editing:
+                self.sel = (self.sel + ev.delta) % len(self.FIELDS)
+            else:
+                f = self.FIELDS[self.sel]
+                if f == "TARGET":
+                    env["target"] = "FILT" if env.get("target", "AMP") == "AMP" else "AMP"
+                elif f == "ATTACK":
+                    step = 50 if env["attack"] >= 500 else (10 if env["attack"] >= 100 else 2)
+                    env["attack"] = clamp(env["attack"] + ev.delta * step, 1, 4000)
+                elif f == "DECAY":
+                    step = 50 if env["decay"] >= 500 else 20
+                    env["decay"] = clamp(env["decay"] + ev.delta * step, 10, 4000)
+                elif f == "SUSTAIN":
+                    env["sustain"] = clamp(env["sustain"] + ev.delta * 5, 0, 100)
+                elif f == "RELEASE":
+                    step = 50 if env["release"] >= 500 else 25
+                    env["release"] = clamp(env["release"] + ev.delta * step, 10, 6000)
+                self.app.apply_envelope()
+
+    def render(self, d):
+        env = self._env()
+        d.text("ADSR ENVELOPE", 0, 1, 255)
+        mode_str = "EDIT" if self.editing else "SEL"
+        d.text("[%s]" % mode_str, 88, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        # 1. Interactive Visual ADSR Envelope Plot (x=4..123, y=16..72)
+        d.rect(2, 16, 124, 56, 255)
+        d.pixel(2, 71, 255)
+
+        att = env.get("attack", 15)
+        dec = env.get("decay", 250)
+        sus = env.get("sustain", 70) / 100.0
+        rel = env.get("release", 450)
+
+        w_att = clamp(int(10 + (att / 2000.0) * 35), 6, 40)
+        w_dec = clamp(int(10 + (dec / 2000.0) * 30), 6, 35)
+        w_sus = 25
+        w_rel = clamp(int(10 + (rel / 3000.0) * 40), 6, 40)
+        total_w = w_att + w_dec + w_sus + w_rel
+        scale_f = 116.0 / total_w if total_w > 0 else 1.0
+
+        p0 = (4, 70)
+        p1 = (int(4 + w_att * scale_f), 20)
+        p2 = (int(p1[0] + w_dec * scale_f), int(70 - sus * 50))
+        p3 = (int(p2[0] + w_sus * scale_f), p2[1])
+        p4 = (min(122, int(p3[0] + w_rel * scale_f)), 70)
+
+        d.line(p0[0], p0[1], p1[0], p1[1], 255)
+        d.line(p1[0], p1[1], p2[0], p2[1], 255)
+        d.line(p2[0], p2[1], p3[0], p3[1], 255)
+        d.line(p3[0], p3[1], p4[0], p4[1], 255)
+
+        d.pixel(p1[0], p1[1], 255)
+        d.pixel(p2[0], p2[1], 255)
+        d.pixel(p3[0], p3[1], 255)
+
+        # 2. Parameters List (y=76..127)
+        d.hline(0, 74, 128, 255)
+        params = [
+            ("TGT", env.get("target", "AMP")),
+            ("A", "%dms" % att),
+            ("D", "%dms" % dec),
+            ("S", "%d%%" % int(sus * 100)),
+            ("R", "%dms" % rel),
+        ]
+        
+        # Row 1: TGT, A, D
+        for idx in range(3):
+            pname, pval = params[idx]
+            is_sel = (idx == self.sel)
+            marker = ">" if is_sel else " "
+            star = "*" if (is_sel and self.editing) else ""
+            bx = idx * 42
+            d.text("%s%s%s:%s" % (marker, star, pname, pval[:5]), bx, 80, 255)
+
+        # Row 2: S, R
+        for idx in range(3, 5):
+            pname, pval = params[idx]
+            is_sel = (idx == self.sel)
+            marker = ">" if is_sel else " "
+            star = "*" if (is_sel and self.editing) else ""
+            bx = (idx - 3) * 64
+            d.text("%s%s%s:%s" % (marker, star, pname, pval[:6]), bx, 98, 255)
+
+        d.text("Target: %s Envelope" % env.get("target", "AMP"), 0, 114, 255)
+
+
+class LFOPage(PageBase):
+    title = "Dual LFOs"
+    WAVES = ["Sine", "Triangle", "Saw Up", "Saw Dn", "Square", "Random"]
+    DESTS = ["Filter", "CV1 Out", "CV2 Out", "Pitch", "PWM", "None"]
+    FIELDS = ["LFO_ID", "WAVE", "RATE", "DEPTH", "DEST"]
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.lfo_id = 0
+        self.sel = 0
+        self.editing = False
+
+    def _lfo(self):
+        lfos = self.app.cfg.setdefault("lfos", [
+            {"wave": "Sine", "rate": 1.0, "depth": 75, "dest": "Filter"},
+            {"wave": "Triangle", "rate": 0.5, "depth": 50, "dest": "CV1 Out"},
+        ])
+        while len(lfos) < 2:
+            lfos.append({"wave": "Sine", "rate": 1.0, "depth": 50, "dest": "None"})
+        return lfos[self.lfo_id]
+
+    def on_event(self, ev):
+        if ev.long_press:
+            self.app.back_to_menu()
+            return
+        lfo = self._lfo()
+        if ev.click:
+            if self.sel == 0:
+                self.lfo_id = 1 - self.lfo_id
+            else:
+                self.editing = not self.editing
+                if not self.editing:
+                    self.app.save_state()
+            return
+        if ev.delta != 0:
+            if not self.editing:
+                self.sel = (self.sel + ev.delta) % len(self.FIELDS)
+            else:
+                f = self.FIELDS[self.sel]
+                if f == "LFO_ID":
+                    self.lfo_id = 1 - self.lfo_id
+                elif f == "WAVE":
+                    idx = self.WAVES.index(lfo.get("wave", "Sine")) if lfo.get("wave") in self.WAVES else 0
+                    idx = (idx + ev.delta) % len(self.WAVES)
+                    lfo["wave"] = self.WAVES[idx]
+                elif f == "RATE":
+                    cur = float(lfo.get("rate", 1.0))
+                    step = 0.5 if cur >= 5.0 else (0.1 if cur >= 1.0 else 0.05)
+                    lfo["rate"] = clamp(round(cur + ev.delta * step, 2), 0.05, 30.0)
+                elif f == "DEPTH":
+                    lfo["depth"] = clamp(int(lfo.get("depth", 50)) + ev.delta * 5, 0, 100)
+                elif f == "DEST":
+                    idx = self.DESTS.index(lfo.get("dest", "None")) if lfo.get("dest") in self.DESTS else 0
+                    idx = (idx + ev.delta) % len(self.DESTS)
+                    lfo["dest"] = self.DESTS[idx]
+
+    def render(self, d):
+        lfo = self._lfo()
+        d.text("MODULATION LFO%d" % (self.lfo_id + 1), 0, 1, 255)
+        mode_str = "EDIT" if self.editing else "SEL"
+        d.text("[%s]" % mode_str, 88, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        # 1. Live Animated Waveform Display (x=4..123, y=16..64)
+        d.rect(2, 16, 124, 48, 255)
+        for x in range(4, 122, 6):
+            d.pixel(x, 40, 255)
+
+        wave = lfo.get("wave", "Sine")
+        rate = float(lfo.get("rate", 1.0))
+        depth = int(lfo.get("depth", 50)) / 100.0
+
+        now_s = time.ticks_ms() / 1000.0
+        phase = (now_s * rate) % 1.0
+
+        import math
+        y_prev = 40
+        for x in range(4, 124):
+            t = ((x - 4) / 120.0 * 2.0 + phase) % 1.0
+            if wave == "Sine":
+                val = math.sin(t * 2 * math.pi)
+            elif wave == "Triangle":
+                val = 4.0 * abs(t - 0.5) - 1.0
+            elif wave == "Saw Up":
+                val = 2.0 * t - 1.0
+            elif wave == "Saw Dn":
+                val = 1.0 - 2.0 * t
+            elif wave == "Square":
+                val = 1.0 if t < 0.5 else -1.0
+            else:
+                val = math.sin(t * 8.0) * 0.7
+            
+            y_curr = clamp(int(40 - val * depth * 20), 18, 62)
+            if x > 4:
+                d.line(x - 1, y_prev, x, y_curr, 255)
+            y_prev = y_curr
+
+        # 2. Parameters List (y=68..127)
+        d.hline(0, 68, 128, 255)
+        params = [
+            ("LFO", "LFO %d" % (self.lfo_id + 1)),
+            ("Wave", wave[:7]),
+            ("Rate", "%.2fHz" % rate),
+            ("Depth", "%d%%" % int(depth * 100)),
+            ("Dest", lfo.get("dest", "None")[:8]),
+        ]
+        y = 72
+        for i, (label, val) in enumerate(params):
+            marker = ">" if i == self.sel else " "
+            star = "*" if (self.editing and i == self.sel) else " "
+            d.text("%s%s%s" % (marker, star, label), 0, y, 255)
+            d.text(val, 56, y, 255)
+            y += 11
+
+
 class PatchesPage(PageBase):
     title = "Patches"
     save_label = "[Save current]"
@@ -2148,11 +2650,34 @@ DEFAULT_CFG = {
         "octaves": 2,
         "gate": 50,
     },
+    "drums": {
+        "running": False,
+        "bpm": 120,
+        "tracks": [
+            {"hits": 4, "steps": 16, "rotate": 0, "mute": False, "vol": 90},
+            {"hits": 2, "steps": 16, "rotate": 4, "mute": False, "vol": 85},
+            {"hits": 8, "steps": 16, "rotate": 0, "mute": False, "vol": 70},
+            {"hits": 3, "steps": 12, "rotate": 2, "mute": False, "vol": 75},
+        ]
+    },
+    "envelope": {
+        "target": "AMP",
+        "attack": 15,
+        "decay": 250,
+        "sustain": 70,
+        "release": 450,
+    },
+    "lfos": [
+        {"wave": "Sine", "rate": 1.0, "depth": 75, "dest": "Filter"},
+        {"wave": "Triangle", "rate": 0.5, "depth": 50, "dest": "CV1 Out"},
+    ],
     "voice_mode": {"polyphony": 6, "unison": False, "detune": 12, "spread": 18},
     "cv_routing": {
         "routes": [
             {"target": "none", "amount": 0, "polarity": 1, "smooth": 20},
             {"target": "none", "amount": 0, "polarity": 1, "smooth": 20},
+            {"target": "pitch", "amount": 100, "polarity": 1, "smooth": 0},
+            {"target": "gate", "amount": 100, "polarity": 1, "smooth": 0},
         ]
     },
     "macros": {"values": [64, 64, 64, 64]},
@@ -2201,8 +2726,6 @@ JUNO_NAMES = [
 
 
 class MenuApp:
-    menu_items = ["Preset Voice", "FX Rack", "Sequencer", "Scope", "Filt Type", "Filt Cut", "Patches", "Macros", "CV Routing", "Voice Mode", "System"]
-
     control_sources = list(CONTROL_SOURCE_OPTIONS)
 
     def __init__(self):
@@ -2216,29 +2739,67 @@ class MenuApp:
         )
 
         self.pages = {
-            "preset voice": PresetVoicePage(self),
-            "fx rack": FXRackPage(self),
+            "perform": PerformPage(self),
+            "group_synth": GroupPage(self, "Synthesizer", 
+                                     ["Preset Voice", "Filter Bode", "Filter Type", "ADSR Envelope", "Voice Mode"], 
+                                     ["preset_voice", "filt_cut", "filt_type", "envelope", "voice_mode"]),
+            "group_seq": GroupPage(self, "Rhythm & Seq", 
+                                   ["Melodic Seq", "Drum Machine"], 
+                                   ["sequencer", "drums"]),
+            "group_mod": GroupPage(self, "Modulation", 
+                                   ["Dual LFOs", "Macros", "CV Routing"], 
+                                   ["lfos", "macros", "cv_routing"]),
+            "group_sys": GroupPage(self, "System & SD", 
+                                   ["Patch Profiles", "System Diag"], 
+                                   ["patches", "system"]),
+            # Sub-pages
+            "preset_voice": PresetVoicePage(self),
+            "filt_cut": FilterCutoffPage(self),
+            "filt_type": FilterTypePage(self),
+            "envelope": EnvPage(self),
+            "voice_mode": VoiceModePage(self),
             "sequencer": SequencerPage(self),
-            "scope": ScopePage(self),
-            "filt type": FilterTypePage(self),
-            "filt cut": FilterCutoffPage(self),
-            "patches": PatchesPage(self),
+            "drums": DrumMachinePage(self),
+            "lfos": LFOPage(self),
             "macros": MacrosPage(self),
-            "cv routing": CVRoutingPage(self),
-            "voice mode": VoiceModePage(self),
+            "cv_routing": CVRoutingPage(self),
+            "fx": FXRackPage(self),
+            "scope": ScopePage(self),
+            "patches": PatchesPage(self),
             "system": SystemPage(self),
         }
 
+        self.menu_items = [
+            "1. PERFORMANCE",
+            "2. SYNTHESIZER",
+            "3. RHYTHM & SEQ",
+            "4. MODULATION",
+            "5. MASTER FX",
+            "6. OSCILLOSCOPE",
+            "7. SYSTEM & SD",
+        ]
+        self.menu_keys = [
+            "perform",
+            "group_synth",
+            "group_seq",
+            "group_mod",
+            "fx",
+            "scope",
+            "group_sys",
+        ]
+
         self.in_page = False
+        self.page_stack = []
+        self.current_page_key = None
         self._gate_prev = False
         self._last_note = -1
         self.audition_off_time = None
-        self.menu_index = clamp(self.state.get("menu_index", 0), 0, len(self.menu_items) - 1)
+        self.menu_index = 0
         self.menu_offset = 0
         self.notice_msg = ""
         self.notice_until = 0
 
-        # Sequencer engine state
+        # Engines
         self.seq_step = 0
         self.seq_last_tick = time.ticks_ms()
         self.seq_last_note = -1
@@ -2247,8 +2808,13 @@ class MenuApp:
         self.seq_ext_clock_prev = False
         self.seq_turing_reg = 0xACE1
 
+        self.drum_step = 0
+        self.drum_last_tick = time.ticks_ms()
+        self.lfo_last_tick = time.ticks_ms()
+
         self.apply_preset_voice(save=False, show_notice=False)
         self.apply_fx()
+        self.apply_envelope()
 
     def _normalize_cfg(self):
         self.cfg = merge_missing(deep_copy(self.cfg), DEFAULT_CFG)
@@ -2317,6 +2883,8 @@ class MenuApp:
             self.cfg["system"]["control_source"], save=False, show_notice=False
         )
         applied = self.apply_preset_voice(save=False, show_notice=False)
+        self.apply_fx()
+        self.apply_envelope()
         self.save_cfg()
         if applied:
             return "loaded"
@@ -2325,45 +2893,47 @@ class MenuApp:
     def _preset_values(self):
         p = self.cfg.get("preset_voice", {})
         if not isinstance(p, dict):
-            p = {}
+            p = deep_copy(DEFAULT_CFG["preset_voice"])
+        p.setdefault("synth", DEFAULT_PRESET_SYNTH)
+        p.setdefault("patch", 0)
+        p.setdefault("num_voices", 1)
+        p.setdefault("cv_pitch_input", DEFAULT_CV_PITCH_INPUT)
+        p.setdefault("cv_gate_input", DEFAULT_CV_GATE_INPUT)
+        p.setdefault("cv_gate_on", DEFAULT_CV_GATE_ON)
+        p.setdefault("cv_gate_off", DEFAULT_CV_GATE_OFF)
+        p.setdefault("cv_pitch_scale", DEFAULT_CV_PITCH_SCALE)
+        p.setdefault("cv_pitch_offset", DEFAULT_CV_PITCH_OFFSET)
         try:
             synth = int(p.get("synth", DEFAULT_PRESET_SYNTH))
         except Exception:
             synth = DEFAULT_PRESET_SYNTH
+        p["synth"] = clamp(synth, 1, 4)
         try:
             patch = int(p.get("patch", BUILTIN_PATCH_MIN))
         except Exception:
             patch = BUILTIN_PATCH_MIN
+        p["patch"] = clamp(patch, BUILTIN_PATCH_MIN, BUILTIN_PATCH_MAX)
         try:
             num_voices = int(p.get("num_voices", 1))
         except Exception:
             num_voices = 1
-        try:
-            cv_pitch_input = int(p.get("cv_pitch_input", DEFAULT_CV_PITCH_INPUT))
-        except Exception:
-            cv_pitch_input = DEFAULT_CV_PITCH_INPUT
-        try:
-            cv_gate_input = int(p.get("cv_gate_input", DEFAULT_CV_GATE_INPUT))
-        except Exception:
-            cv_gate_input = DEFAULT_CV_GATE_INPUT
-        p["synth"] = clamp(synth, 0, 31)
-        p["patch"] = clamp(patch, BUILTIN_PATCH_MIN, BUILTIN_PATCH_MAX)
         p["num_voices"] = clamp(num_voices, 1, 16)
-        p["cv_pitch_input"] = clamp(cv_pitch_input, 0, 1)
-        p["cv_gate_input"] = clamp(cv_gate_input, 0, 1)
         try:
-            gate_on = float(p.get("cv_gate_on", DEFAULT_CV_GATE_ON))
+            p["cv_pitch_input"] = int(p.get("cv_pitch_input", DEFAULT_CV_PITCH_INPUT))
         except Exception:
-            gate_on = DEFAULT_CV_GATE_ON
+            p["cv_pitch_input"] = DEFAULT_CV_PITCH_INPUT
         try:
-            gate_off = float(p.get("cv_gate_off", DEFAULT_CV_GATE_OFF))
+            p["cv_gate_input"] = int(p.get("cv_gate_input", DEFAULT_CV_GATE_INPUT))
         except Exception:
-            gate_off = DEFAULT_CV_GATE_OFF
-        if gate_on <= gate_off:
-            gate_on = DEFAULT_CV_GATE_ON
-            gate_off = DEFAULT_CV_GATE_OFF
-        p["cv_gate_on"] = gate_on
-        p["cv_gate_off"] = gate_off
+            p["cv_gate_input"] = DEFAULT_CV_GATE_INPUT
+        try:
+            p["cv_gate_on"] = float(p.get("cv_gate_on", DEFAULT_CV_GATE_ON))
+        except Exception:
+            p["cv_gate_on"] = DEFAULT_CV_GATE_ON
+        try:
+            p["cv_gate_off"] = float(p.get("cv_gate_off", DEFAULT_CV_GATE_OFF))
+        except Exception:
+            p["cv_gate_off"] = DEFAULT_CV_GATE_OFF
         try:
             p["cv_pitch_scale"] = float(p.get("cv_pitch_scale", DEFAULT_CV_PITCH_SCALE))
         except Exception:
@@ -2399,8 +2969,6 @@ class MenuApp:
         return "Patch-%d" % p
 
     def apply_cv_play_mapping(self):
-       # CV is handled live in the run loop via cv_in()
-       # No static routing API available on this firmware
         return True
 
     def apply_filter_type(self, save=False, show_notice=False):
@@ -2410,7 +2978,6 @@ class MenuApp:
         cutoff = int(p.get("filter_cutoff", DEFAULT_FILTER_CUTOFF))
         try:
             import amy
-
             amy.send(
                 synth=p["synth"],
                 osc=0,
@@ -2433,95 +3000,125 @@ class MenuApp:
 
     def apply_preset_voice(self, save=False, show_notice=False):
         p = self._preset_values()
-        ok = False
         try:
             import amy
-
             amy.send(
                 synth=p["synth"],
                 patch=p["patch"],
                 num_voices=p["num_voices"],
+                filter_type=filter_type_to_amy_value(p["filter_type"]),
+                filter_freq=p["filter_cutoff"],
             )
             ok = True
-        except Exception:
+        except Exception as e:
+            print("Voice error:", e)
             ok = False
 
-        filter_ok = self.apply_filter_type(save=False, show_notice=False)
-        cv_ok = self.apply_cv_play_mapping()
         if show_notice:
-            if ok and filter_ok and cv_ok:
-                self.notice("Preset %s ready" % self.patch_label(p["patch"]))
-            elif ok and filter_ok:
-                self.notice("Preset set; CV map err")
-            elif ok:
-                self.notice("Preset apply failed")
+            if ok:
+                self.notice("Preset ready")
             else:
-                self.notice("Preset apply failed")
+                self.notice("Preset err")
         if save:
             self.save_cfg()
-        return ok and filter_ok and cv_ok
+        return ok
+
+    def apply_control_source(self, mode, save=False, show_notice=False):
+        mode = str(mode).lower()
+        if mode not in self.control_sources:
+            mode = "hybrid"
+        self.cfg["system"]["control_source"] = mode
+        driver = make_input_driver(mode, midi_channel_getter=self.get_midi_channel)
+        ok = driver.enabled if hasattr(driver, "enabled") else True
+        if ok or mode in ("computer", "demo", "hybrid"):
+            self.input_driver = driver
+        else:
+            self.input_driver = make_input_driver("hybrid", midi_channel_getter=self.get_midi_channel)
+            self.cfg["system"]["control_source"] = "hybrid"
+
+        if show_notice:
+            self.notice("Ctrl:%s" % self.input_driver.name[:10])
+        if save:
+            self.save_cfg()
+        return True
 
     def get_midi_channel(self):
         try:
-            return clamp(int(self.cfg["system"].get("midi_channel", 1)), 1, 16)
+            return int(self.cfg["system"].get("midi_channel", 1))
         except Exception:
             return 1
-
-    def apply_control_source(self, mode, save=False, show_notice=False):
-        m = str(mode).lower()
-        if m not in self.control_sources:
-            m = "hybrid"
-        self.cfg["system"]["control_source"] = m
-        self.input_driver = make_input_driver(m, midi_channel_getter=self.get_midi_channel)
-        if show_notice:
-            self.notice("Input: " + self.input_driver.name, 1200)
-        if save:
-            self.save_cfg()
-
-    def save_cfg(self):
-        return safe_write_json(CONFIG_PATH, self.cfg)
-
-    def save_state(self):
-        self.state["menu_index"] = self.menu_index
-        self.state["current_page"] = "menu" if not self.in_page else self.menu_items[self.menu_index]
-        return safe_write_json(STATE_PATH, self.state)
 
     def panic(self):
         try:
             import amy
-
-            synth = int(self.cfg.get("preset_voice", {}).get("synth", DEFAULT_PRESET_SYNTH))
-            amy.send(synth=synth, vel=0)
+            amy.send(vel=0)
+            amy.reset()
+            self.apply_preset_voice(save=False, show_notice=False)
+            self.apply_fx()
+            self.apply_envelope()
         except Exception:
             pass
-        self.notice("PANIC")
+        self._gate_prev = False
+        self._last_note = -1
+
+    def save_cfg(self):
+        return safe_write_json(CONFIG_PATH, self.cfg)
+
+    def load_cfg(self):
+        self.cfg = merge_missing(deep_copy(safe_read_json(CONFIG_PATH, DEFAULT_CFG)), DEFAULT_CFG)
+        self._normalize_cfg()
+
+    def save_state(self):
+        payload = {"menu_index": self.menu_index, "current_page": "menu"}
+        return safe_write_json(STATE_PATH, payload)
+
+    def load_state(self):
+        self.state = merge_missing(deep_copy(safe_read_json(STATE_PATH, DEFAULT_STATE)), DEFAULT_STATE)
 
     def notice(self, msg, ms=1500):
         self.notice_msg = msg
         self.notice_until = time.ticks_add(time.ticks_ms(), ms)
 
     def current_page(self):
-        key = self.menu_items[self.menu_index].lower()
-        return self.pages.get(key, None)
+        if self.current_page_key and self.current_page_key in self.pages:
+            return self.pages[self.current_page_key]
+        return None
+
+    def open_page(self, key):
+        if self.in_page and self.current_page_key:
+            self.page_stack.append(self.current_page_key)
+        else:
+            self.page_stack = []
+        self.in_page = True
+        self.current_page_key = key
+        p = self.current_page()
+        if p:
+            p.on_enter()
 
     def back_to_menu(self):
-        self.in_page = False
+        if self.page_stack:
+            prev = self.page_stack.pop()
+            self.current_page_key = prev
+            p = self.current_page()
+            if p:
+                p.on_enter()
+        else:
+            self.in_page = False
+            self.current_page_key = None
         self.save_state()
 
     def handle_event(self, ev):
-        # global long-press at top level = panic
         if (not self.in_page) and ev.long_press:
             self.panic()
+            self.notice("PANIC: ALL OFF")
             return
 
         if not self.in_page:
             if ev.delta != 0:
                 self.menu_index = (self.menu_index + ev.delta) % len(self.menu_items)
             if ev.click:
-                self.in_page = True
-                p = self.current_page()
-                if p:
-                    p.on_enter()
+                key = self.menu_keys[self.menu_index]
+                self.open_page(key)
             return
 
         p = self.current_page()
@@ -2530,13 +3127,9 @@ class MenuApp:
 
     def render_menu(self):
         d = self.display
-        # 1. Eurorack Top Header Bar (y=0..12)
-        d.text("AMYBOARD", 0, 1, 255)
-        midi_ch = self.cfg["system"].get("midi_channel", 1)
-        d.text("[CH:%d]" % midi_ch, 84, 1, 255)
+        d.text("AMYBOARD EURORACK", 0, 1, 255)
         d.hline(0, 12, 128, 255)
 
-        # 2. Scrollable Menu Items (y=16..127)
         visible_count = 7
         if self.menu_index < self.menu_offset:
             self.menu_offset = self.menu_index
@@ -2550,10 +3143,9 @@ class MenuApp:
             item = self.menu_items[i]
             is_active = (i == self.menu_index)
             marker = "> " if is_active else "  "
-            d.text(marker + item[:14], 0, y, 255)
+            d.text(marker + item[:15], 0, y, 255)
             y += 16
 
-        # 3. Right Scrollbar Track (x=125..127)
         total_items = len(self.menu_items)
         if total_items > visible_count:
             track_h = 108
@@ -2574,7 +3166,6 @@ class MenuApp:
 
         now = time.ticks_ms()
         if self.notice_msg and time.ticks_diff(self.notice_until, now) > 0:
-            # Framed notification toast box at bottom
             d.fill_rect(2, 110, 124, 17, 0)
             d.rect(2, 110, 124, 17, 255)
             d.text(self.notice_msg[:15], 6, 115, 255)
@@ -2586,7 +3177,6 @@ class MenuApp:
             import amy
             fx = self.cfg.setdefault("fx", {})
             
-            # External Audio In Live Thru
             ext_in = int(fx.get("ext_in", 0))
             if ext_in > 0:
                 ext_gain = ext_in / 100.0
@@ -2602,7 +3192,6 @@ class MenuApp:
             rev_dmp = float(fx.get("reverb_damp", 0.3))
             rev_room = float(fx.get("reverb_room", 0.5))
             if rev_lvl > 0.001:
-                # AMY reverb: (level, liveness, damping, xover_hz)
                 liveness = clamp(rev_room, 0.0, 0.95)
                 damping = clamp(rev_dmp, 0.0, 0.95)
                 amy.reverb(rev_lvl, liveness, damping, 3000)
@@ -2620,7 +3209,6 @@ class MenuApp:
             ech_time = int(fx.get("echo_time", 250))
             ech_fdbk = clamp(float(fx.get("echo_feedback", 0.4)), 0.0, 0.85)
             if ech_lvl > 0.001:
-                # AMY echo: (level, delay_ms_l, delay_ms_r, feedback_l, feedback_r)
                 delay_l = ech_time
                 delay_r = int(ech_time * 0.75) if ech_time > 40 else ech_time
                 amy.echo(ech_lvl, delay_l, delay_r, ech_fdbk, ech_fdbk)
@@ -2630,6 +3218,24 @@ class MenuApp:
             p = self._preset_values()
             res = float(fx.get("resonance", 1.0))
             amy.send(synth=p["synth"], resonance=res)
+        except Exception:
+            pass
+
+    def apply_envelope(self):
+        try:
+            import amy
+            env = self.cfg.get("envelope", {})
+            p = self._preset_values()
+            att = env.get("attack", 15)
+            dec = env.get("decay", 250)
+            sus = env.get("sustain", 70) / 100.0
+            rel = env.get("release", 450)
+            
+            bp_str = "0,0,%d,1.0,%d,%.2f,%d,0" % (att, att + dec, sus, rel)
+            if env.get("target", "AMP") == "AMP":
+                amy.send(synth=p["synth"], bp0=bp_str)
+            else:
+                amy.send(synth=p["synth"], bp1=bp_str)
         except Exception:
             pass
 
@@ -2729,6 +3335,84 @@ class MenuApp:
                 except Exception:
                     pass
 
+    def tick_drums(self, now):
+        drums = self.cfg.setdefault("drums", {})
+        if not drums.get("running", False):
+            return
+        bpm = drums.get("bpm", 120)
+        step_interval = int(15000.0 / bpm)
+        if time.ticks_diff(now, self.drum_last_tick) >= step_interval:
+            self.drum_last_tick = now
+            self.drum_step = (self.drum_step + 1) % 16
+            
+            tracks = drums.get("tracks", [])
+            drum_notes = [36, 38, 42, 39]
+            
+            for tidx in range(min(4, len(tracks))):
+                t = tracks[tidx]
+                if t.get("mute", False):
+                    continue
+                hits = t.get("hits", 4)
+                steps = t.get("steps", 16)
+                rot = t.get("rotate", 0)
+                raw = generate_euclidean(hits, steps)
+                step_idx = (self.drum_step - rot) % steps
+                if raw[step_idx]:
+                    vol = t.get("vol", 80) / 100.0
+                    try:
+                        import amy
+                        amy.send(osc=32 + tidx, wave=amy.PCM, note=drum_notes[tidx], vel=vol)
+                    except Exception:
+                        pass
+
+    def tick_lfos(self, now):
+        lfos = self.cfg.setdefault("lfos", [])
+        if time.ticks_diff(now, self.lfo_last_tick) < 30:
+            return
+        self.lfo_last_tick = now
+        
+        now_s = now / 1000.0
+        import math
+        for idx in range(min(2, len(lfos))):
+            lfo = lfos[idx]
+            wave = lfo.get("wave", "Sine")
+            rate = float(lfo.get("rate", 1.0))
+            depth = int(lfo.get("depth", 50)) / 100.0
+            dest = lfo.get("dest", "None")
+            if dest == "None":
+                continue
+            
+            t = (now_s * rate) % 1.0
+            if wave == "Sine":
+                val = math.sin(t * 2 * math.pi)
+            elif wave == "Triangle":
+                val = 4.0 * abs(t - 0.5) - 1.0
+            elif wave == "Saw Up":
+                val = 2.0 * t - 1.0
+            elif wave == "Saw Dn":
+                val = 1.0 - 2.0 * t
+            elif wave == "Square":
+                val = 1.0 if t < 0.5 else -1.0
+            else:
+                val = math.sin(t * 8.0) * 0.7
+            
+            mod_v = val * depth
+            try:
+                import amy
+                if dest == "Filter":
+                    p = self._preset_values()
+                    base_fc = float(p.get("filter_cutoff", 1000))
+                    new_fc = clamp(base_fc * (2.0 ** (mod_v * 1.5)), 80, 16000)
+                    amy.send(synth=p["synth"], filter_freq=int(new_fc))
+                elif dest == "Pitch":
+                    p = self._preset_values()
+                    amy.send(synth=p["synth"], pitch_bend=mod_v * 0.1)
+                elif dest == "PWM":
+                    p = self._preset_values()
+                    amy.send(synth=p["synth"], duty=clamp(0.5 + mod_v * 0.4, 0.05, 0.95))
+            except Exception:
+                pass
+
     def run(self):
         last_save = time.ticks_ms()
         
@@ -2749,8 +3433,10 @@ class MenuApp:
             if ev.delta or ev.click or ev.long_press:
                 self.handle_event(ev)
 
-            # 1. Tick Sequencer
+            # 1. Tick Engines
             self.tick_sequencer(now)
+            self.tick_drums(now)
+            self.tick_lfos(now)
 
             # 2. CV/Gate Input Processing (if Sequencer is not running)
             if not self.cfg.get("sequencer", {}).get("running", False):
@@ -2790,8 +3476,8 @@ class MenuApp:
                 self.save_state()
                 last_save = now
 
-            seq_active = self.cfg.get("sequencer", {}).get("running", False)
-            time.sleep_ms(15 if seq_active else 35)
+            seq_active = self.cfg.get("sequencer", {}).get("running", False) or self.cfg.get("drums", {}).get("running", False)
+            time.sleep_ms(15 if seq_active else 30)
 
 
 def main():
