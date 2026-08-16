@@ -927,10 +927,12 @@ class PresetVoicePage(PageBase):
         if ev.delta != 0:
             if f == "patch":
                 v[f] = clamp(int(v.get(f, BUILTIN_PATCH_MIN)) + ev.delta, BUILTIN_PATCH_MIN, BUILTIN_PATCH_MAX)
-                # Quick audio audition preview note
+                # Quick 120ms audition preview note
                 try:
                     import amy
-                    amy.send(synth=int(v.get("synth", 1)), patch=v[f], note=60, vel=0.75)
+                    s_id = int(v.get("synth", 1))
+                    amy.send(synth=s_id, patch=v[f], note=60, vel=0.75)
+                    self.app.audition_off_time = time.ticks_add(time.ticks_ms(), 120)
                 except Exception:
                     pass
             elif f == "synth":
@@ -959,7 +961,7 @@ class PresetVoicePage(PageBase):
         pname = self.app.patch_label(patch)
         rows = [
             ("Patch", "#%03d" % patch),
-            ("Name", pname[:10]),
+            ("Name", pname[:12]),
             ("Synth", "Engine %d" % synth),
             ("Poly", "%d voices" % voices),
         ]
@@ -968,7 +970,7 @@ class PresetVoicePage(PageBase):
             marker = ">" if (i < len(self.fields) and i == self.sel) else " "
             star = "*" if (self.editing and i == self.sel) else " "
             d.text("%s%s%s" % (marker, star, label), 0, y, 255)
-            d.text(val, 56, y, 255)
+            d.text(val, 48, y, 255)
             y += 18
 
         d.hline(0, 96, 128, 255)
@@ -2154,6 +2156,32 @@ DEFAULT_CFG = {
 
 DEFAULT_STATE = {"menu_index": 0, "current_page": "menu"}
 
+DX7_NAMES = [
+    "BRASS 1", "BRASS 2", "STRINGS 1", "STRINGS 2", "SYN-ORCH", "PIANO 1", "PIANO 2", "PIANO 3",
+    "E.PIANO 1", "GUITAR 1", "GUITAR 2", "SYN-LEAD 1", "BASS 1", "BASS 2", "E.ORGAN 1", "PIPES 1",
+    "HARPSICH 1", "CLAV 1", "VIBE 1", "MARIMBA", "TUB BELLS", "VOICE 1", "RECORDER", "SOLO VIO",
+    "GLOCKENS", "TRUMPET 1", "HORN", "CALLIOPE", "SYN-BASS 1", "TIMPANI", "SNARE DRUM", "KICK DRUM",
+    "BRASS 3", "STRINGS 3", "SYN-ORCH 2", "E.PIANO 2", "E.PIANO 3", "E.ORGAN 2", "HARP 1", "KOTO",
+    "SITAR", "SLAP BASS", "SYN-BASS 2", "FRETLESS", "FLUTE 1", "OBOE 1", "CLARINET", "BASSOON",
+    "ACCORDION", "HARMONICA", "STEEL DRUM", "XYLOPHONE", "CELESTA", "BELLS", "VOICE 2", "WHISTLE",
+    "CHIME", "SNARE 2", "TOM TOM", "CYMBAL", "SPLASH", "COWBELL", "WOOD BLOCK", "CLAPS",
+    "SPACE PAD", "DIGI-LOG", "FUNK CLAV", "ANALOG BASS", "WARM STRINGS", "GLASS VOX", "DIGI BELLS", "ICE PLUCK",
+    "ORGAN 3", "ORGAN 4", "JAZZ GUITAR", "FUNK BASS", "POLY SYNTH", "SWEEP LEAD", "RESO LEAD", "SYNC LEAD",
+    "CRYSTAL", "CELLO", "VIOLIN", "FRENCH HORN", "TROMBONE", "SAX", "PAN FLUTE", "SHAKUHACHI",
+    "KALIMBA", "GAMELAN", "TIMBALE", "AGOGO", "TAMBOURINE", "CONGA", "SHAKER", "DRUM SET",
+    "BELL PAD", "SYN-VOX", "HARP 2", "WARM PAD", "SOLO CELLO", "MUTED TRUMP", "SYN-CLAV", "TOUCH ORGAN",
+    "WINE GLASS", "LOG DRUM", "SYN-PIANO", "MELLOW HORN", "FANTASIA", "ATMOSPHERE", "VOX HUMANA", "SOLO SYNTH",
+    "TECHNO BASS", "POP BRASS", "SOLO FLUTE", "CHURCH BELL", "VIBES 2", "ELECTRIC 12", "SYNTH-STRING", "ORCHESTRAL",
+    "FRETLESS 2", "JAZZ ORGAN", "SAW LEAD", "SQUARE LEAD", "SOFT STRINGS", "FAT BASS", "DIGITAL PAD", "PERCUSSION"
+]
+
+JUNO_NAMES = [
+    "Juno Brass", "Warm Strings", "Poly Synth", "Reso Sweep", "Juno Bass", "Analog Clav", "Chorused Pad", "Bright Pluck",
+    "Sub Bass", "Sync Lead", "Flute Lead", "PWM Strings", "Fat Saw", "Staccato", "Velo Sweep", "Square Lead",
+    "Soft Brass", "Slow Strings", "Classic Poly", "Reso Bass", "Acid Bass", "Organ Pad", "Glass Keys", "Harpsi Synth",
+    "Moog Bass", "Arp Pluck", "Octave Synth", "PWM Pad", "Whistle Lead", "Brass Sweep", "Trance Lead", "Synth Bell"
+]
+
 
 class MenuApp:
     menu_items = ["Preset Voice", "FX Rack", "Sequencer", "Scope", "Filt Type", "Filt Cut", "Patches", "Macros", "CV Routing", "Voice Mode", "System"]
@@ -2187,6 +2215,7 @@ class MenuApp:
         self.in_page = False
         self._gate_prev = False
         self._last_note = -1
+        self.audition_off_time = None
         self.menu_index = clamp(self.state.get("menu_index", 0), 0, len(self.menu_items) - 1)
         self.menu_offset = 0
         self.notice_msg = ""
@@ -2337,14 +2366,19 @@ class MenuApp:
 
     def patch_label(self, patch):
         p = int(patch)
+        if p < len(JUNO_NAMES):
+            return JUNO_NAMES[p]
         if p < 128:
-            return "Juno-%03d" % p
+            return "Juno-%02d" % p
         if p < 256:
-            return "DX7-%03d" % (p - 128)
+            dx_idx = p - 128
+            if dx_idx < len(DX7_NAMES):
+                return DX7_NAMES[dx_idx]
+            return "DX7-%02d" % dx_idx
         if p == 256:
-            return "Piano"
+            return "Grand Piano"
         if p == 257:
-            return "WebBase"
+            return "Web Bass"
         return "Patch-%d" % p
 
     def apply_cv_play_mapping(self):
@@ -2716,6 +2750,16 @@ class MenuApp:
                     self._gate_prev = gate
                 except Exception:
                     pass
+
+            # 3. Audition Note Release
+            if self.audition_off_time and time.ticks_diff(now, self.audition_off_time) >= 0:
+                try:
+                    import amy
+                    p = self._preset_values()
+                    amy.send(synth=p["synth"], vel=0)
+                except Exception:
+                    pass
+                self.audition_off_time = None
 
             self.render()
 
