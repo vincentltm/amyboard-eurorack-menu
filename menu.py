@@ -832,12 +832,12 @@ class GroupPage(PageBase):
     def __init__(self, app, title, items, page_keys):
         super().__init__(app)
         self.title = title
-        self.items = items
-        self.page_keys = page_keys
+        self.items = ["< Back"] + items
+        self.page_keys = ["__back__"] + page_keys
         self.offset = 0
 
     def on_enter(self):
-        self.sel = 0
+        self.sel = 1 if len(self.items) > 1 else 0
         self.offset = 0
 
     def on_event(self, ev):
@@ -852,7 +852,10 @@ class GroupPage(PageBase):
                 self.offset = self.sel - 5
         if ev.click:
             key = self.page_keys[self.sel]
-            self.app.open_page(key)
+            if key == "__back__":
+                self.app.back_to_menu()
+            else:
+                self.app.open_page(key)
 
     def render(self, d):
         d.text(self.title, 0, 1, 255)
@@ -971,12 +974,15 @@ class PerformPage(PageBase):
 class DrumMachinePage(PageBase):
     title = "Drums"
     TRACK_NAMES = ["KICK", "SNARE", "HIHAT", "PERC"]
-    FIELDS = ["TRACK", "STATE", "BPM", "HITS", "STEPS", "ROTATE", "MUTE", "VOL"]
+    FIELDS = ["STATE", "TRACK", "HITS", "ROTATE", "MUTE", "VOL", "BPM"]
 
     def __init__(self, app):
         super().__init__(app)
         self.track_idx = 0
-        self.edit_field = 0
+        self.sel = 0
+        self.editing = False
+
+    def on_enter(self):
         self.editing = False
 
     def on_event(self, ev):
@@ -996,37 +1002,39 @@ class DrumMachinePage(PageBase):
         })
         t = drums["tracks"][self.track_idx]
 
-        if ev.click:
-            if self.edit_field == 0:
-                self.track_idx = (self.track_idx + 1) % 4
-            elif self.edit_field == 1:
-                drums["running"] = not drums.get("running", False)
-            else:
-                self.editing = not self.editing
-            return
-
-        if ev.delta != 0:
-            if not self.editing:
-                self.edit_field = (self.edit_field + ev.delta) % len(self.FIELDS)
-            else:
-                f = self.FIELDS[self.edit_field]
-                if f == "TRACK":
-                    self.track_idx = (self.track_idx + ev.delta) % 4
-                elif f == "STATE":
+        if not self.editing:
+            if ev.delta != 0:
+                self.sel = (self.sel + ev.delta) % len(self.FIELDS)
+            if ev.click:
+                f = self.FIELDS[self.sel]
+                if f == "STATE":
                     drums["running"] = not drums.get("running", False)
-                elif f == "BPM":
-                    drums["bpm"] = clamp(drums.get("bpm", 120) + ev.delta * 2, 40, 240)
-                elif f == "HITS":
-                    t["hits"] = clamp(t.get("hits", 4) + ev.delta, 0, t.get("steps", 16))
-                elif f == "STEPS":
-                    t["steps"] = clamp(t.get("steps", 16) + ev.delta, 2, 16)
-                    if t["hits"] > t["steps"]: t["hits"] = t["steps"]
-                elif f == "ROTATE":
-                    t["rotate"] = (t.get("rotate", 0) + ev.delta) % t.get("steps", 16)
                 elif f == "MUTE":
                     t["mute"] = not t.get("mute", False)
-                elif f == "VOL":
-                    t["vol"] = clamp(t.get("vol", 80) + ev.delta * 5, 0, 100)
+                else:
+                    self.editing = True
+            return
+
+        f = self.FIELDS[self.sel]
+        if ev.delta != 0:
+            if f == "STATE":
+                drums["running"] = not drums.get("running", False)
+            elif f == "TRACK":
+                self.track_idx = (self.track_idx + ev.delta) % 4
+            elif f == "HITS":
+                t["hits"] = clamp(t.get("hits", 4) + ev.delta, 0, t.get("steps", 16))
+            elif f == "ROTATE":
+                t["rotate"] = (t.get("rotate", 0) + ev.delta) % t.get("steps", 16)
+            elif f == "MUTE":
+                t["mute"] = not t.get("mute", False)
+            elif f == "VOL":
+                t["vol"] = clamp(t.get("vol", 80) + ev.delta * 5, 0, 100)
+            elif f == "BPM":
+                drums["bpm"] = clamp(drums.get("bpm", 120) + ev.delta * 2, 40, 240)
+
+        if ev.click:
+            self.editing = False
+            self.app.save_state()
 
     def render(self, d):
         drums = self.app.cfg.setdefault("drums", {
@@ -1077,23 +1085,25 @@ class DrumMachinePage(PageBase):
         t = drums["tracks"][self.track_idx]
         tname = self.TRACK_NAMES[self.track_idx]
         params = [
-            ("Track", tname[:4]),
+            ("Play", "RUN" if running else "STOP"),
+            ("Track", tname),
             ("Hits", "%d/%d" % (t.get("hits", 4), t.get("steps", 16))),
-            ("Rot", "%d" % t.get("rotate", 0)),
+            ("Rotate", "%d" % t.get("rotate", 0)),
             ("Mute", "YES" if t.get("mute", False) else "NO"),
-            ("Vol", "%d%%" % t.get("vol", 80)),
+            ("Volume", "%d%%" % t.get("vol", 80)),
+            ("Tempo", "%dBPM" % bpm),
         ]
         
         visible_count = 3
-        offset = clamp(self.edit_field - 3, 0, max(0, len(params) - visible_count))
+        offset = clamp(self.sel - 1, 0, max(0, len(params) - visible_count))
         y = 78
         for i in range(offset, min(len(params), offset + visible_count)):
             pname, pval = params[i]
-            is_sel = (i + 3 == self.edit_field)
+            is_sel = (i == self.sel)
             marker = ">" if is_sel else " "
             star = "*" if (is_sel and self.editing) else " "
-            d.text("%s%s%s" % (marker, star, pname), 0, y, 255)
-            d.text(pval, 60, y, 255)
+            d.text("%s%s%s" % (marker, star, pname[:6]), 0, y, 255)
+            d.text(pval[:6], 60, y, 255)
             y += 16
 
 
@@ -3345,7 +3355,7 @@ class MenuApp:
             self.drum_step = (self.drum_step + 1) % 16
             
             tracks = drums.get("tracks", [])
-            drum_notes = [36, 38, 42, 39]
+            drum_patches = [0, 1, 2, 3]
             
             for tidx in range(min(4, len(tracks))):
                 t = tracks[tidx]
@@ -3360,7 +3370,7 @@ class MenuApp:
                     vol = t.get("vol", 80) / 100.0
                     try:
                         import amy
-                        amy.send(osc=32 + tidx, wave=amy.PCM, note=drum_notes[tidx], vel=vol)
+                        amy.send(osc=32 + tidx, wave=amy.PCM, patch=drum_patches[tidx], vel=vol)
                     except Exception:
                         pass
 
