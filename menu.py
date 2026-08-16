@@ -262,6 +262,42 @@ class Display:
         if fill_w > 0:
             self.fill_rect(x + 1, y + 1, fill_w, h - 2, 255)
 
+    def line(self, x0, y0, x1, y1, color=255):
+        if self.kind == "none":
+            return
+        c = 1 if self.kind == "sh1107" and color else (color if self.kind != "sh1107" else 0)
+        try:
+            self._d.line(int(x0), int(y0), int(x1), int(y1), c)
+        except Exception:
+            pass
+
+    def pixel(self, x, y, color=255):
+        if self.kind == "none":
+            return
+        c = 1 if self.kind == "sh1107" and color else (color if self.kind != "sh1107" else 0)
+        try:
+            self._d.pixel(int(x), int(y), c)
+        except Exception:
+            pass
+
+    def hline(self, x, y, w, color=255):
+        if self.kind == "none":
+            return
+        c = 1 if self.kind == "sh1107" and color else (color if self.kind != "sh1107" else 0)
+        try:
+            self._d.hline(int(x), int(y), int(w), c)
+        except Exception:
+            pass
+
+    def vline(self, x, y, h, color=255):
+        if self.kind == "none":
+            return
+        c = 1 if self.kind == "sh1107" and color else (color if self.kind != "sh1107" else 0)
+        try:
+            self._d.vline(int(x), int(y), int(h), c)
+        except Exception:
+            pass
+
 
 # -----------------------------
 # Input events + drivers
@@ -1242,8 +1278,256 @@ class SystemPage(PageBase):
                 line = "MIDI Ch:%d" % self.app.cfg["system"]["midi_channel"]
             elif it == "Input":
                 line = "Input:%s" % self.app.input_driver.name
-            d.text("%s%s %s" % (marker, star, line[:18]), 0, y, 255)
-            y += 18
+class ScopePage(PageBase):
+    title = "Scope"
+
+    SOURCES = ["AUDIO CV1", "AUDIO CV2", "CV1 ROLL", "CV2 ROLL", "DUAL", "SYNTH"]
+    SHORT_SRC = ["AUD1", "AUD2", "CV1", "CV2", "DUAL", "VOX"]
+    SCALES = ["5V", "10V", "+/-5V"]
+    TRIGGERS = ["AUTO", "NORM", "FREE"]
+
+    NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.source_idx = 0
+        self.scale_idx = 0
+        self.trigger_idx = 0
+        self.hold = False
+
+        self.edit_field = 0  # 0=Source, 1=Scale, 2=Trigger, 3=Hold
+
+        # Data buffers (120 points wide to fit inside x=4..123)
+        self.buf_width = 120
+        self.roll_cv1 = [0.0] * self.buf_width
+        self.roll_cv2 = [0.0] * self.buf_width
+        self.last_burst = [0.0] * self.buf_width
+        self.synth_phase = 0.0
+
+        self.last_v = 0.0
+        self.v_min = 0.0
+        self.v_max = 0.0
+        self.v_pp = 0.0
+
+    def on_enter(self):
+        self.editing = False
+
+    def on_event(self, ev):
+        if ev.long_press:
+            self.app.back_to_menu()
+            return
+
+        if ev.click:
+            # Click toggles between field selection and value editing
+            if not self.editing:
+                self.editing = True
+            else:
+                self.edit_field = (self.edit_field + 1) % 4
+                if self.edit_field == 0:
+                    self.editing = False
+            return
+
+        if ev.delta != 0:
+            if not self.editing:
+                # Fast switch channel/source by spinning encoder
+                self.source_idx = (self.source_idx + ev.delta) % len(self.SOURCES)
+            else:
+                if self.edit_field == 0:
+                    self.source_idx = (self.source_idx + ev.delta) % len(self.SOURCES)
+                elif self.edit_field == 1:
+                    self.scale_idx = (self.scale_idx + ev.delta) % len(self.SCALES)
+                elif self.edit_field == 2:
+                    self.trigger_idx = (self.trigger_idx + ev.delta) % len(self.TRIGGERS)
+                elif self.edit_field == 3:
+                    self.hold = not self.hold
+
+    def _sample_burst(self, cv_idx):
+        # Fast burst sample loop for audio-rate signals
+        buf = []
+        for _ in range(160):
+            try:
+                buf.append(float(amyboard.cv_in(cv_idx)))
+            except Exception:
+                buf.append(0.0)
+        return buf
+
+    def _get_note_str(self, v):
+        try:
+            p = self.app._preset_values()
+            scale = float(p.get("cv_pitch_scale", DEFAULT_CV_PITCH_SCALE))
+            offset = float(p.get("cv_pitch_offset", DEFAULT_CV_PITCH_OFFSET))
+            note_f = v * scale + offset
+            note_i = int(clamp(note_f, 0, 127))
+            cents = int((note_f - note_i) * 100)
+            octave = (note_i // 12) - 1
+            name = self.NOTE_NAMES[note_i % 12]
+            cents_sign = "+" if cents >= 0 else ""
+            return "%s%d %s%dc" % (name, octave, cents_sign, cents)
+        except Exception:
+            return ""
+
+    def _map_y(self, v, y_min, y_max):
+        scale = self.SCALES[self.scale_idx]
+        h = y_max - y_min
+        if scale == "5V":
+            norm = clamp(v / 5.0, 0.0, 1.0)
+        elif scale == "10V":
+            norm = clamp(v / 10.0, 0.0, 1.0)
+        else:  # "+/-5V"
+            norm = clamp((v + 5.0) / 10.0, 0.0, 1.0)
+        return y_max - int(norm * h)
+
+    def render(self, d):
+        # 1. Header Bar (y=0..12)
+        src_label = self.SHORT_SRC[self.source_idx]
+        scale_label = self.SCALES[self.scale_idx]
+        trig_label = self.TRIGGERS[self.trigger_idx]
+        hold_label = "HOLD" if self.hold else "RUN"
+
+        # Highlight current edit field with prefix marker
+        f0 = ">" if (self.editing and self.edit_field == 0) else ""
+        f1 = ">" if (self.editing and self.edit_field == 1) else ""
+        f2 = ">" if (self.editing and self.edit_field == 2) else ""
+        f3 = ">" if (self.editing and self.edit_field == 3) else ""
+
+        d.text("%s%s" % (f0, src_label), 0, 1, 255)
+        d.text("%s%s" % (f1, scale_label), 40, 1, 255)
+        d.text("%s%s" % (f2, trig_label), 74, 1, 255)
+        d.text("%s%s" % (f3, hold_label), 102, 1, 255)
+        d.hline(0, 12, 128, 255)
+
+        # 2. Scope Graticule Area (x=0, y=14, w=128, h=86)
+        d.rect(0, 14, 128, 86, 255)
+        # Dotted center zero/cross axes
+        for x in range(2, 126, 6):
+            d.pixel(x, 57, 255)
+        for y in range(16, 98, 6):
+            d.pixel(64, y, 255)
+
+        src = self.source_idx
+
+        # 3. Waveform processing and drawing
+        if src in (0, 1):  # AUDIO CV1 or AUDIO CV2
+            if not self.hold:
+                raw = self._sample_burst(0 if src == 0 else 1)
+                if raw:
+                    self.v_min = min(raw)
+                    self.v_max = max(raw)
+                    self.v_pp = self.v_max - self.v_min
+                    self.last_v = raw[-1]
+                    avg = (self.v_min + self.v_max) / 2.0
+
+                    trig = 0
+                    if self.TRIGGERS[self.trigger_idx] != "FREE":
+                        for i in range(len(raw) - self.buf_width):
+                            if raw[i] <= avg and raw[i + 1] > avg:
+                                trig = i
+                                break
+                    self.last_burst = raw[trig : trig + self.buf_width]
+
+            # Draw trace
+            if len(self.last_burst) > 1:
+                y_prev = self._map_y(self.last_burst[0], 16, 98)
+                for i in range(1, len(self.last_burst)):
+                    x0 = 3 + i - 1
+                    x1 = 3 + i
+                    y_curr = self._map_y(self.last_burst[i], 16, 98)
+                    d.line(x0, y_prev, x1, y_curr, 255)
+                    y_prev = y_curr
+
+        elif src in (2, 3):  # CV1 ROLL or CV2 ROLL
+            cv_idx = 0 if src == 2 else 1
+            if not self.hold:
+                try:
+                    v = float(amyboard.cv_in(cv_idx))
+                except Exception:
+                    v = 0.0
+                buf = self.roll_cv1 if src == 2 else self.roll_cv2
+                buf.pop(0)
+                buf.append(v)
+                self.last_v = v
+                self.v_min = min(buf)
+                self.v_max = max(buf)
+                self.v_pp = self.v_max - self.v_min
+
+            buf = self.roll_cv1 if src == 2 else self.roll_cv2
+            y_prev = self._map_y(buf[0], 16, 98)
+            for i in range(1, len(buf)):
+                x0 = 3 + i - 1
+                x1 = 3 + i
+                y_curr = self._map_y(buf[i], 16, 98)
+                d.line(x0, y_prev, x1, y_curr, 255)
+                y_prev = y_curr
+
+        elif src == 4:  # DUAL (CV1 + CV2)
+            if not self.hold:
+                try:
+                    v1 = float(amyboard.cv_in(0))
+                    v2 = float(amyboard.cv_in(1))
+                except Exception:
+                    v1, v2 = 0.0, 0.0
+                self.roll_cv1.pop(0)
+                self.roll_cv1.append(v1)
+                self.roll_cv2.pop(0)
+                self.roll_cv2.append(v2)
+                self.last_v = v1
+                self.v_min = min(self.roll_cv1)
+                self.v_max = max(self.roll_cv1)
+                self.v_pp = self.v_max - self.v_min
+
+            # Upper trace: CV1 in y=16..54
+            d.text("1", 4, 16, 255)
+            y_prev1 = self._map_y(self.roll_cv1[0], 16, 54)
+            for i in range(1, len(self.roll_cv1)):
+                x0 = 3 + i - 1
+                x1 = 3 + i
+                y_curr1 = self._map_y(self.roll_cv1[i], 16, 54)
+                d.line(x0, y_prev1, x1, y_curr1, 255)
+                y_prev1 = y_curr1
+
+            # Lower trace: CV2 in y=60..98
+            d.text("2", 4, 60, 255)
+            y_prev2 = self._map_y(self.roll_cv2[0], 60, 98)
+            for i in range(1, len(self.roll_cv2)):
+                x0 = 3 + i - 1
+                x1 = 3 + i
+                y_curr2 = self._map_y(self.roll_cv2[i], 60, 98)
+                d.line(x0, y_prev2, x1, y_curr2, 255)
+                y_prev2 = y_curr2
+
+        elif src == 5:  # SYNTH (Voice Preview)
+            import math
+            synth_wave = []
+            for i in range(self.buf_width):
+                t = self.synth_phase + (i * 0.18)
+                s = math.sin(t) + 0.35 * math.sin(2.0 * t) + 0.18 * math.sin(3.0 * t)
+                synth_wave.append(s * 1.8 + 2.5)
+            if not self.hold:
+                self.synth_phase = (self.synth_phase + 0.35) % (2.0 * math.pi)
+
+            self.last_v = synth_wave[-1]
+            self.v_min = min(synth_wave)
+            self.v_max = max(synth_wave)
+            self.v_pp = self.v_max - self.v_min
+
+            y_prev = self._map_y(synth_wave[0], 16, 98)
+            for i in range(1, len(synth_wave)):
+                x0 = 3 + i - 1
+                x1 = 3 + i
+                y_curr = self._map_y(synth_wave[i], 16, 98)
+                d.line(x0, y_prev, x1, y_curr, 255)
+                y_prev = y_curr
+
+        # 4. Telemetry Footer (y=103..127)
+        d.text("V:%.2fV P-P:%.2fV" % (self.last_v, self.v_pp), 0, 103, 255)
+        if src in (0, 2):  # CV1 / Pitch mode -> show 1V/Oct note
+            note_str = self._get_note_str(self.last_v)
+            d.text("Note:%s" % note_str, 0, 116, 255)
+        elif src in (1, 3):  # CV2 / Gate mode -> show Gate state
+            gate_state = "HIGH" if self.last_v >= DEFAULT_CV_GATE_ON else "LOW"
+            d.text("Gate:%s (%.2fV)" % (gate_state, self.last_v), 0, 116, 255)
+        else:
+            d.text("Min:%.2f Max:%.2f" % (self.v_min, self.v_max), 0, 116, 255)
 
 
 # -----------------------------
@@ -1279,7 +1563,7 @@ DEFAULT_STATE = {"menu_index": 0, "current_page": "menu"}
 
 
 class MenuApp:
-    menu_items = ["Preset Voice", "Filt Type", "Filt Cut", "Patches", "Macros", "CV Routing", "Voice Mode", "System"]
+    menu_items = ["Preset Voice", "Scope", "Filt Type", "Filt Cut", "Patches", "Macros", "CV Routing", "Voice Mode", "System"]
 
     control_sources = list(CONTROL_SOURCE_OPTIONS)
 
@@ -1295,6 +1579,7 @@ class MenuApp:
 
         self.pages = {
             "preset voice": PresetVoicePage(self),
+            "scope": ScopePage(self),
             "filt type": FilterTypePage(self),
             "filt cut": FilterCutoffPage(self),
             "patches": PatchesPage(self),
@@ -1475,7 +1760,7 @@ class MenuApp:
                 filter_freq=cutoff,
             )
             ok = True
-        except Exception:
+        except Exception as e:
             print("Filter error:", e)
             ok = False
 
@@ -1587,11 +1872,20 @@ class MenuApp:
 
     def render_menu(self):
         d = self.display
+        visible_count = 8
+        if self.menu_index < self.menu_offset:
+            self.menu_offset = self.menu_index
+        elif self.menu_index >= self.menu_offset + visible_count:
+            self.menu_offset = self.menu_index - visible_count + 1
+
         y = 2
-        for i, item in enumerate(self.menu_items):
+        start = self.menu_offset
+        end = min(len(self.menu_items), start + visible_count)
+        for i in range(start, end):
+            item = self.menu_items[i]
             marker = ">" if i == self.menu_index else " "
             d.text(marker + item[:18], 0, y, 255)
-            y += 14
+            y += 15
 
     def render(self):
         d = self.display
