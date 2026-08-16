@@ -1611,9 +1611,9 @@ class FXRackPage(PageBase):
                 self.app.apply_fx()
 
     def render(self, d):
-        d.text("FX RACK (DSP)", 0, 1, 255)
+        d.text("FX RACK", 0, 1, 255)
         mode_str = "EDIT" if self.editing else "SEL"
-        d.text("[%s]" % mode_str, 92, 1, 255)
+        d.text("[%s]" % mode_str, 88, 1, 255)
         d.hline(0, 12, 128, 255)
 
         visible_count = 7
@@ -1626,19 +1626,18 @@ class FXRackPage(PageBase):
             cur = float(fx_cfg.get(key, DEFAULT_CFG["fx"].get(key, v_min)))
             is_sel = (i == self.selected_idx)
             marker = ">" if is_sel else " "
-            star = "*" if (is_sel and self.editing) else " "
 
-            d.text("%s%s%s" % (marker, star, label), 0, y, 255)
+            d.text("%s%s" % (marker, label[:7]), 0, y, 255)
 
             val_disp = cur * mult
             val_str = fmt % val_disp
-            d.text(val_str, 72, y, 255)
+            d.text(val_str[:5], 60, y, 255)
 
             norm = clamp((cur - v_min) / (v_max - v_min) if v_max > v_min else 0.0, 0.0, 1.0)
-            bar_w = int(norm * 18)
-            d.rect(108, y + 1, 19, 7, 255)
+            bar_w = int(norm * 22)
+            d.rect(98, y + 1, 24, 7, 255)
             if bar_w > 0:
-                d.fill_rect(108, y + 1, bar_w, 7, 255)
+                d.fill_rect(98, y + 1, bar_w, 7, 255)
 
             y += 14
 
@@ -1646,7 +1645,7 @@ class FXRackPage(PageBase):
         rev_on = fx_cfg.get("reverb_level", 0.0) > 0.01
         cho_on = fx_cfg.get("chorus_level", 0.0) > 0.01
         ech_on = fx_cfg.get("echo_level", 0.0) > 0.01
-        d.text("REV:%s CHO:%s ECH:%s" % ("ON" if rev_on else "--", "ON" if cho_on else "--", "ON" if ech_on else "--"), 0, 118, 255)
+        d.text("R:%s C:%s E:%s" % ("ON" if rev_on else "--", "ON" if cho_on else "--", "ON" if ech_on else "--"), 0, 118, 255)
 
 
 def generate_euclidean(hits, steps):
@@ -1762,9 +1761,9 @@ class SequencerPage(PageBase):
         scale_name, _ = self.SCALES[scale_idx]
 
         status_str = "[RUN]" if running else "[STP]"
-        bpm_str = "EXT" if bpm == 0 else ("%dBPM" % bpm)
+        bpm_str = "EXT" if bpm == 0 else ("%d" % bpm)
         d.text("%s %s" % (status_str, bpm_str), 0, 1, 255)
-        d.text("E(%d,%d)" % (hits, steps), 76, 1, 255)
+        d.text("E:%d/%d" % (hits, steps), 80, 1, 255)
         d.hline(0, 12, 128, 255)
 
         raw_euc = generate_euclidean(hits, steps)
@@ -1794,14 +1793,14 @@ class SequencerPage(PageBase):
             ln = self.app.seq_last_note
             ln_name = self.NOTE_NAMES[ln % 12]
             ln_oct = (ln // 12) - 1
-            d.text("Step:%d Note:%s%d (%d)" % (curr_step + 1, ln_name, ln_oct, ln), 0, 50, 255)
+            d.text("S%d %s%d (%d)" % (curr_step + 1, ln_name, ln_oct, ln), 0, 50, 255)
         else:
-            d.text("Scale:%s Key:%s%d" % (scale_name[:8], root_name, root_oct), 0, 50, 255)
+            d.text("%s %s%d" % (scale_name[:8], root_name, root_oct), 0, 50, 255)
         d.hline(0, 60, 128, 255)
 
         params = [
             ("STATE", status_str),
-            ("BPM", bpm_str),
+            ("BPM", "EXT" if bpm == 0 else "%d" % bpm),
             ("STEPS", "%d" % steps),
             ("HITS", "%d" % hits),
             ("ROT", "%d" % rotate),
@@ -1821,7 +1820,7 @@ class SequencerPage(PageBase):
             marker = ">" if is_sel else " "
             star = "*" if (is_sel and self.editing) else " "
             d.text("%s%s%s" % (marker, star, pname), 0, y, 255)
-            d.text(pval, 70, y, 255)
+            d.text(pval, 68, y, 255)
             y += 15
 
 
@@ -2269,11 +2268,21 @@ class MenuApp:
         except Exception:
             pass
 
+    def send_midi_msg(self, data):
+        try:
+            if hasattr(self.input_driver, "uart") and self.input_driver.uart:
+                self.input_driver.uart.write(data)
+        except Exception:
+            pass
+
     def sequencer_stop(self):
         try:
             import amy
             p = self._preset_values()
             amy.send(synth=p["synth"], vel=0)
+            if self.seq_last_note >= 0:
+                ch = clamp(int(self.cfg["system"].get("midi_channel", 1)) - 1, 0, 15)
+                self.send_midi_msg(bytes([0x80 | ch, self.seq_last_note, 0]))
             self.seq_last_note = -1
             self.seq_gate_active = False
         except Exception:
@@ -2316,6 +2325,9 @@ class MenuApp:
                 import amy
                 p = self._preset_values()
                 amy.send(synth=p["synth"], vel=0)
+                if self.seq_last_note >= 0:
+                    ch = clamp(int(self.cfg["system"].get("midi_channel", 1)) - 1, 0, 15)
+                    self.send_midi_msg(bytes([0x80 | ch, self.seq_last_note, 0]))
             except Exception:
                 pass
             self.seq_gate_active = False
@@ -2343,6 +2355,8 @@ class MenuApp:
                     import amy
                     p = self._preset_values()
                     amy.send(synth=p["synth"], note=note, vel=1.0)
+                    ch = clamp(int(self.cfg["system"].get("midi_channel", 1)) - 1, 0, 15)
+                    self.send_midi_msg(bytes([0x90 | ch, note, 100]))
                     self.seq_last_note = note
                     self.seq_gate_active = True
                     step_dur = int(15000.0 / bpm) if bpm > 0 else 120
