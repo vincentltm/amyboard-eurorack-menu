@@ -1284,8 +1284,8 @@ class SystemPage(PageBase):
 class ScopePage(PageBase):
     title = "Scope"
 
-    SOURCES = ["AUDIO CV1", "AUDIO CV2", "CV1 ROLL", "CV2 ROLL", "DUAL"]
-    SHORT_SRC = ["AU1", "AU2", "CV1", "CV2", "DUL"]
+    SOURCES = ["AUDIO CV1", "AUDIO CV2", "CV1 ROLL", "CV2 ROLL", "DUAL", "SYNTH OUT"]
+    SHORT_SRC = ["AU1", "AU2", "CV1", "CV2", "DUL", "VOX"]
     SCALES = ["5V", "10V", "+/-5V"]
     SHORT_SCALE = ["5V", "10V", "+-5"]
     TRIGGERS = ["AUTO", "NORM", "FREE"]
@@ -1497,6 +1497,47 @@ class ScopePage(PageBase):
                 d.line(x0, y_prev2, x1, y_curr2, 255)
                 y_prev2 = y_curr2
 
+        elif src == 5:  # SYNTH OUT (Real Live AMY Audio Output Buffer)
+            if not self.hold:
+                try:
+                    import struct, amy
+                    buf = amy.get_output_buffer()
+                    if buf:
+                        all_s = struct.unpack("<512h", buf)
+                        raw_audio = [all_s[i] / 32768.0 for i in range(0, len(all_s), 2)]
+                        max_v = max(raw_audio)
+                        min_v = min(raw_audio)
+                        pp = max_v - min_v
+                        
+                        gain = 1.0
+                        if pp > 0.005:
+                            gain = clamp(1.8 / pp, 1.0, 8.0)
+
+                        trig = 0
+                        if self.TRIGGERS[self.trigger_idx] != "FREE" and pp > 0.01:
+                            for i in range(len(raw_audio) - self.buf_width):
+                                if raw_audio[i] <= 0.0 and raw_audio[i + 1] > 0.0:
+                                    trig = i
+                                    break
+                        self.last_burst = [raw_audio[trig + i] * gain for i in range(min(self.buf_width, len(raw_audio) - trig))]
+                        self.v_min = min_v * 5.0
+                        self.v_max = max_v * 5.0
+                        self.v_pp = pp * 5.0
+                        self.last_v = raw_audio[-1] * 5.0
+                except Exception:
+                    pass
+
+            if len(self.last_burst) > 1:
+                y_center = 57
+                y_span = 36
+                y_prev = int(y_center - clamp(self.last_burst[0], -1.0, 1.0) * y_span)
+                for i in range(1, len(self.last_burst)):
+                    x0 = 3 + i - 1
+                    x1 = 3 + i
+                    y_curr = int(y_center - clamp(self.last_burst[i], -1.0, 1.0) * y_span)
+                    d.line(x0, y_prev, x1, y_curr, 255)
+                    y_prev = y_curr
+
         # 4. Telemetry Footer (y=103..127)
         d.text("V:%.2fV P-P:%.2fV" % (self.last_v, self.v_pp), 0, 103, 255)
         if src in (0, 2):  # CV1 / Pitch mode -> show 1V/Oct note
@@ -1505,6 +1546,17 @@ class ScopePage(PageBase):
         elif src in (1, 3):  # CV2 / Gate mode -> show Gate state
             gate_state = "HIGH" if self.last_v >= DEFAULT_CV_GATE_ON else "LOW"
             d.text("Gate:%s (%.2fV)" % (gate_state, self.last_v), 0, 116, 255)
+        elif src == 5:  # SYNTH OUT
+            if self.v_pp > 0.05:
+                if self.app._gate_prev and self.app._last_note >= 0:
+                    note_i = int(clamp(self.app._last_note, 0, 127))
+                    octave = (note_i // 12) - 1
+                    name = self.NOTE_NAMES[note_i % 12]
+                    d.text("Synth: %s%d ACTIVE" % (name, octave), 0, 116, 255)
+                else:
+                    d.text("Synth: PLAYING", 0, 116, 255)
+            else:
+                d.text("Synth: SILENT", 0, 116, 255)
         else:
             d.text("Min:%.2f Max:%.2f" % (self.v_min, self.v_max), 0, 116, 255)
 
