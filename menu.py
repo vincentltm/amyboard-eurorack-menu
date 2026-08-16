@@ -958,19 +958,24 @@ class PresetVoicePage(PageBase):
         d.text("[%s]" % mode_str, 88, 1, 255)
         d.hline(0, 12, 128, 255)
 
+        # 1. Active Patch Name Banner (y=16..31)
         pname = self.app.patch_label(patch)
+        bank_tag = "JUNO" if patch < 128 else ("DX7" if patch < 256 else "PCM")
+        d.rect(0, 16, 128, 16, 255)
+        d.text("%s: %s" % (bank_tag, pname[:10]), 4, 20, 255)
+
+        # 2. Parameter fields exactly matching self.fields (sel 0, 1, 2)
         rows = [
             ("Patch", "#%03d" % patch),
-            ("Name", pname[:12]),
             ("Synth", "Engine %d" % synth),
-            ("Poly", "%d voices" % voices),
+            ("Poly", "%d vox" % voices),
         ]
-        y = 18
+        y = 38
         for i, (label, val) in enumerate(rows):
-            marker = ">" if (i < len(self.fields) and i == self.sel) else " "
+            marker = ">" if i == self.sel else " "
             star = "*" if (self.editing and i == self.sel) else " "
             d.text("%s%s%s" % (marker, star, label), 0, y, 255)
-            d.text(val, 48, y, 255)
+            d.text(val, 60, y, 255)
             y += 18
 
         d.hline(0, 96, 128, 255)
@@ -2176,10 +2181,22 @@ DX7_NAMES = [
 ]
 
 JUNO_NAMES = [
-    "Juno Brass", "Warm Strings", "Poly Synth", "Reso Sweep", "Juno Bass", "Analog Clav", "Chorused Pad", "Bright Pluck",
-    "Sub Bass", "Sync Lead", "Flute Lead", "PWM Strings", "Fat Saw", "Staccato", "Velo Sweep", "Square Lead",
-    "Soft Brass", "Slow Strings", "Classic Poly", "Reso Bass", "Acid Bass", "Organ Pad", "Glass Keys", "Harpsi Synth",
-    "Moog Bass", "Arp Pluck", "Octave Synth", "PWM Pad", "Whistle Lead", "Brass Sweep", "Trance Lead", "Synth Bell"
+    "Brass 1", "Brass 2", "Horn 1", "Trumpet 1", "Flute", "Pipes", "Organ 1", "Organ 2",
+    "Strings 1", "Strings 2", "Cello 1", "Violin 1", "Pizzicato", "Harp", "Bass 1", "Bass 2",
+    "Piano 1", "Piano 2", "E.Piano 1", "E.Piano 2", "Harpsi 1", "Harpsi 2", "Clav 1", "Clav 2",
+    "Synth Pad", "Warm Pad", "Sweep Pad", "Space Pad", "Bell 1", "Bell 2", "Vibes", "Marimba",
+    "Lead 1", "Lead 2", "Sync Lead", "Reso Lead", "Pulse Lead", "Square Lead", "Saw Lead", "Whistle",
+    "Funk Clav", "Pluck", "Arp Synth", "Chirp", "Laser", "Staccato", "Oct Synth", "Fat Saw",
+    "PWM Strings", "Soft Brass", "Moog Bass", "Acid Bass", "Sub Bass", "Slap Bass", "Chorused", "Phase Pad",
+    "Echo Synth", "Trance Pad", "Voice Lead", "Calliope", "Tubular", "Steel Pan", "Tom Drum", "SFX Noise",
+    "Brass 3", "Soft Horn", "Trombone", "Muted Brass", "Pan Flute", "Church Org", "Jazz Organ", "Rock Organ",
+    "Slow Strings", "Chamber Str", "Pizz Str", "Solo Cello", "Sitar 1", "Koto 1", "Fretless", "Synth Bass 3",
+    "Honky Tonk", "Tack Piano", "Wurlitzer", "Rhodes Pad", "Harpsichord", "Spinet", "Funk Synth", "Mute Clav",
+    "Analog Pad", "Glass Pad", "Air Pad", "Solar Wind", "Chimes", "Glocken", "Xylophone", "Celesta",
+    "Fifth Lead", "Mono Lead", "Searing Saw", "Ring Mod", "Filter Lead", "Glide Lead", "Solo Saw", "Ocarina",
+    "Wah Clav", "Guitar Synth", "Muted Pluck", "Zap Synth", "SciFi FX", "Short Stab", "Dual Saw", "Super Saw",
+    "Orch Strings", "Brass Ens", "House Bass", "Reso Bass 2", "Deep Sub", "Pick Bass", "Dimension", "Rotary Pad",
+    "Digital Pad", "Vocal Pad", "Sweep Synth", "Techno Pad", "Crystal Vox", "Steam Organ", "Gong", "Woodblock"
 ]
 
 
