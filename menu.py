@@ -2421,21 +2421,31 @@ class FXRackPage(PageBase):
         d.text("R:%s C:%s E:%s" % ("ON" if rev_on else "--", "ON" if cho_on else "--", "ON" if ech_on else "--"), 0, 118, 255)
 
 
+_EUC_CACHE = {}
+
 def generate_euclidean(hits, steps):
     if steps <= 0: return [0]
     hits = max(0, min(steps, hits))
-    if hits == 0: return [0] * steps
-    if hits == steps: return [1] * steps
-    pattern = []
-    bucket = 0
-    for _ in range(steps):
-        bucket += hits
-        if bucket >= steps:
-            bucket -= steps
-            pattern.append(1)
-        else:
-            pattern.append(0)
-    return pattern
+    key = (hits, steps)
+    if key in _EUC_CACHE:
+        return _EUC_CACHE[key]
+    if hits == 0:
+        res = [0] * steps
+    elif hits == steps:
+        res = [1] * steps
+    else:
+        pattern = []
+        bucket = 0
+        for _ in range(steps):
+            bucket += hits
+            if bucket >= steps:
+                bucket -= steps
+                pattern.append(1)
+            else:
+                pattern.append(0)
+        res = pattern
+    _EUC_CACHE[key] = res
+    return res
 
 
 class SequencerPage(PageBase):
@@ -3404,6 +3414,8 @@ class MenuApp:
 
     def run(self):
         last_save = time.ticks_ms()
+        last_render = time.ticks_ms()
+        last_gc = time.ticks_ms()
         
         while True:
             try:
@@ -3418,16 +3430,17 @@ class MenuApp:
 
             now = time.ticks_ms()
 
+            # 1. Fast Input Polling
             ev = self.input_driver.poll(now)
             if ev.delta or ev.click or ev.long_press:
                 self.handle_event(ev)
 
-            # 1. Tick Engines
+            # 2. High-Precision Engine Ticks (Sub-millisecond Sequencer & Drums)
             self.tick_sequencer(now)
             self.tick_drums(now)
             self.tick_lfos(now)
 
-            # 2. CV/Gate Input Processing (if Sequencer is not running)
+            # 3. CV/Gate Input Processing (if Sequencer is not running)
             if not self.cfg.get("sequencer", {}).get("running", False):
                 try:
                     p = self._preset_values()
@@ -3449,7 +3462,7 @@ class MenuApp:
                 except Exception:
                     pass
 
-            # 3. Audition Note Release
+            # 4. Audition Note Release
             if self.audition_off_time and time.ticks_diff(now, self.audition_off_time) >= 0:
                 try:
                     import amy
@@ -3459,14 +3472,26 @@ class MenuApp:
                     pass
                 self.audition_off_time = None
 
-            self.render()
+            # 5. Decoupled Display Refresh (Rock-Solid 30 FPS = every ~33ms)
+            if time.ticks_diff(now, last_render) >= 33:
+                self.render()
+                last_render = now
 
+            # 6. Periodic State Save & Memory Cleanup
             if time.ticks_diff(now, last_save) > 10000:
                 self.save_state()
                 last_save = now
 
-            seq_active = self.cfg.get("sequencer", {}).get("running", False) or self.cfg.get("drums", {}).get("running", False)
-            time.sleep_ms(15 if seq_active else 30)
+            if time.ticks_diff(now, last_gc) > 15000:
+                try:
+                    import gc
+                    gc.collect()
+                except Exception:
+                    pass
+                last_gc = now
+
+            # Ultra-short yield to keep Core 1 responsive without burning CPU
+            time.sleep_ms(2)
 
 
 def main():
