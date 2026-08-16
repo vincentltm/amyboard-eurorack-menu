@@ -877,100 +877,6 @@ class GroupPage(PageBase):
             d.fill_rect(125, thumb_y, 3, thumb_h, 255)
 
 
-class PerformPage(PageBase):
-    title = "Performance"
-
-    def on_event(self, ev):
-        if ev.long_press:
-            self.app.back_to_menu()
-            return
-        if ev.click:
-            seq = self.app.cfg.setdefault("sequencer", {})
-            seq["running"] = not seq.get("running", False)
-            if not seq["running"]:
-                self.app.sequencer_stop()
-        if ev.delta != 0:
-            p = self.app._preset_values()
-            p["patch"] = clamp(p["patch"] + ev.delta, BUILTIN_PATCH_MIN, BUILTIN_PATCH_MAX)
-            try:
-                import amy
-                amy.send(synth=p["synth"], patch=p["patch"], note=60, vel=0.75)
-                self.app.audition_off_time = time.ticks_add(time.ticks_ms(), 120)
-            except Exception:
-                pass
-
-    def render(self, d):
-        p = self.app._preset_values()
-        seq = self.app.cfg.setdefault("sequencer", {})
-        macros = self.app.cfg.setdefault("macros", {}).get("values", [64, 64, 64, 64])
-        pname = self.app.patch_label(p["patch"])
-
-        # 1. Top Ribbon: Patch & Transport State (y=0..12)
-        status_str = "RUN" if seq.get("running", False) else "STP"
-        d.text("[%s] #%03d" % (status_str, p["patch"]), 0, 1, 255)
-        d.text(pname[:6], 80, 1, 255)
-        d.hline(0, 12, 128, 255)
-
-        # 2. Left Macro Meters: M1 & M2 (x=0..12, y=16..84)
-        for idx, mx in enumerate([0, 7]):
-            val = macros[idx]
-            norm = clamp(val / 127.0, 0.0, 1.0)
-            bh = int(norm * 64)
-            d.rect(mx, 16, 5, 68, 255)
-            if bh > 0:
-                d.fill_rect(mx, 84 - bh, 5, bh, 255)
-
-        # 3. Right Macro Meters: M3 & M4 (x=115..127, y=16..84)
-        for idx, mx in enumerate([115, 122]):
-            val = macros[idx + 2]
-            norm = clamp(val / 127.0, 0.0, 1.0)
-            bh = int(norm * 64)
-            d.rect(mx, 16, 5, 68, 255)
-            if bh > 0:
-                d.fill_rect(mx, 84 - bh, 5, bh, 255)
-
-        # 4. Center Audio Scope (x=16..112, y=16..84)
-        d.rect(15, 16, 97, 68, 255)
-        for x in range(17, 110, 4):
-            d.pixel(x, 50, 255)
-
-        try:
-            import struct, amy
-            buf = amy.get_output_buffer()
-            if buf:
-                all_s = struct.unpack("<512h", buf)
-                stride = 8
-                pts = [all_s[i] / 32768.0 for i in range(0, min(len(all_s), 48 * stride * 2), 2 * stride)]
-                y_prev = 50
-                for i in range(min(48, len(pts))):
-                    x0 = 17 + i * 2
-                    y_curr = clamp(int(50 - pts[i] * 28), 18, 82)
-                    if i > 0:
-                        d.line(x0 - 2, y_prev, x0, y_curr, 255)
-                    y_prev = y_curr
-        except Exception:
-            pass
-
-        # 5. Bottom Ribbon: Sequencer Step Track (y=88..127)
-        d.hline(0, 88, 128, 255)
-        bpm = seq.get("bpm", 120)
-        d.text("BPM:%s" % ("EXT" if bpm == 0 else "%d" % bpm), 0, 92, 255)
-        if self.app.seq_last_note >= 0:
-            n_name = SequencerPage.NOTE_NAMES[self.app.seq_last_note % 12]
-            n_oct = (self.app.seq_last_note // 12) - 1
-            d.text("N:%s%d" % (n_name, n_oct), 72, 92, 255)
-        else:
-            d.text("Vox:%d" % p.get("num_voices", 1), 76, 92, 255)
-
-        curr_step = self.app.seq_step % 16 if seq.get("running", False) else -1
-        for i in range(16):
-            sx = 4 + i * 7
-            sy = 108
-            d.rect(sx, sy, 5, 5, 255)
-            if i == curr_step:
-                d.fill_rect(sx, sy, 5, 5, 255)
-
-
 class DrumMachinePage(PageBase):
     title = "Drums"
     TRACK_NAMES = ["KICK", "SNARE", "HIHAT", "PERC"]
@@ -2748,7 +2654,6 @@ class MenuApp:
         )
 
         self.pages = {
-            "perform": PerformPage(self),
             "group_synth": GroupPage(self, "Synthesizer", 
                                      ["Preset Voice", "Filter Bode", "Filter Type", "ADSR Envelope", "Voice Mode"], 
                                      ["preset_voice", "filt_cut", "filt_type", "envelope", "voice_mode"]),
@@ -2779,7 +2684,6 @@ class MenuApp:
         }
 
         self.menu_items = [
-            "Performance",
             "Synthesizer",
             "Rhythm & Seq",
             "Modulation",
@@ -2788,7 +2692,6 @@ class MenuApp:
             "System & SD",
         ]
         self.menu_keys = [
-            "perform",
             "group_synth",
             "group_seq",
             "group_mod",
@@ -3487,7 +3390,7 @@ class MenuApp:
             # 5. Smart Event-Driven Display Refresh
             is_anim = self.cfg.get("sequencer", {}).get("running", False) or \
                       self.cfg.get("drums", {}).get("running", False) or \
-                      self.current_page_key in ("scope", "perform", "lfos")
+                      self.current_page_key in ("scope", "lfos")
             render_interval = 40 if is_anim else 150
 
             if needs_render or time.ticks_diff(now, last_render) >= render_interval:
