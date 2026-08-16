@@ -870,8 +870,7 @@ class PatchesPage(PageBase):
             if i > 0 and self.files[i - 1] == current:
                 name = "*" + name
             d.text(prefix + name[:18], 0, y, 255)
-            y += 16
-        d.text("click:load/save", 0, 112, 160)
+            y += 17
 
 class PresetVoicePage(PageBase):
     title = "Preset Voice"
@@ -918,7 +917,7 @@ class PresetVoicePage(PageBase):
             "CV2:gate trig",
             "click:save",
         ]
-        y = 16
+        y = 14
         for i, row in enumerate(rows):
             marker = ">"
             star = " "
@@ -926,7 +925,7 @@ class PresetVoicePage(PageBase):
                 marker = ">" if i == self.sel else " "
                 star = "*" if self.editing and i == self.sel else " "
             d.text("%s%s %s" % (marker, star, row[:16]), 0, y, 255)
-            y += 16
+            y += 14
 
 
 class FilterTypePage(PageBase):
@@ -954,13 +953,12 @@ class FilterTypePage(PageBase):
     def render(self, d):
         cur = normalize_filter_type(self._values().get("filter_type", DEFAULT_FILTER_TYPE))
         d.text("Filt Type", 0, 0, 255)
-        d.text("Mode:%s" % cur, 0, 24, 255)
+        d.text("Mode:%s" % cur, 0, 20, 255)
         y = 40
         for opt in FILTER_TYPE_OPTIONS:
             marker = ">" if opt == cur else " "
             d.text("%s %s" % (marker, opt), 0, y, 255)
-            y += 16
-        d.text("delta:change", 0, 112, 160)
+            y += 17
 
 class FilterCutoffPage(PageBase):
     title = "Filt Cut"
@@ -983,7 +981,6 @@ class FilterCutoffPage(PageBase):
         d.text("Filt Cutoff", 0, 0, 255)
         d.text("Freq:%dHz" % cutoff, 0, 24, 255)
         d.bar(0, 48, 128, 12, cutoff, 12000)
-        d.text("delta:change", 0, 112, 160)
 
 class VoiceModePage(PageBase):
     title = "Voice Mode"
@@ -1026,7 +1023,7 @@ class VoiceModePage(PageBase):
     def render(self, d):
         d.text("Voice Mode", 0, 0, 255)
         v = self._values()
-        y = 16
+        y = 14
         for i, f in enumerate(self.fields):
             marker = ">" if i == self.sel else " "
             star = "*" if self.editing and i == self.sel else " "
@@ -1034,7 +1031,7 @@ class VoiceModePage(PageBase):
             if isinstance(val, bool):
                 val = "on" if val else "off"
             d.text("%s%s %s:%s" % (marker, star, f[:7], str(val)), 0, y, 255)
-            y += 16
+            y += 14
 
 
 class CVRoutingPage(PageBase):
@@ -1103,12 +1100,12 @@ class CVRoutingPage(PageBase):
             "polarity:%s" % ("+" if r["polarity"] > 0 else "-"),
             "smooth:%d" % r["smooth"],
         ]
-        y = 16
+        y = 14
         for i, row in enumerate(rows):
             marker = ">" if i == self.sel else " "
             star = "*" if self.editing and i == self.sel else " "
             d.text("%s%s %s" % (marker, star, row[:18]), 0, y, 255)
-            y += 16
+            y += 14
 
 
 class MacrosPage(PageBase):
@@ -1141,13 +1138,13 @@ class MacrosPage(PageBase):
     def render(self, d):
         vals = self.app.cfg["macros"]["values"]
         d.text("Macros", 0, 0, 255)
-        y = 16
+        y = 14
         for i in range(4):
             marker = ">" if i == self.sel else " "
             star = "*" if self.editing and i == self.sel else " "
             d.text("%s%s M%d %03d" % (marker, star, i + 1, vals[i]), 0, y, 255)
             d.bar(70, y, 56, 12, vals[i], 127)
-            y += 16
+            y += 14
 
 
 class SystemPage(PageBase):
@@ -1158,6 +1155,7 @@ class SystemPage(PageBase):
         super().__init__(app)
         self.scan_cache = []
         self._control_before_edit = None
+        self.offset = 0
 
     def on_event(self, ev):
         if not self.editing:
@@ -1224,8 +1222,17 @@ class SystemPage(PageBase):
 
     def render(self, d):
         d.text("System", 0, 0, 255)
-        y = 16
-        for i, it in enumerate(self.items):
+        visible_count = 5
+        if self.sel < self.offset:
+            self.offset = self.sel
+        elif self.sel >= self.offset + visible_count:
+            self.offset = self.sel - visible_count + 1
+
+        y = 20
+        start = self.offset
+        end = min(len(self.items), start + visible_count)
+        for i in range(start, end):
+            it = self.items[i]
             marker = ">" if i == self.sel else " "
             star = "*" if self.editing and i == self.sel else " "
             line = it
@@ -1236,7 +1243,7 @@ class SystemPage(PageBase):
             elif it == "Input":
                 line = "Input:%s" % self.app.input_driver.name
             d.text("%s%s %s" % (marker, star, line[:18]), 0, y, 255)
-            y += 16
+            y += 18
 
 
 # -----------------------------
@@ -1301,6 +1308,7 @@ class MenuApp:
         self._gate_prev = False
         self._last_note = -1
         self.menu_index = clamp(self.state.get("menu_index", 0), 0, len(self.menu_items) - 1)
+        self.menu_offset = 0
         self.notice_msg = ""
         self.notice_until = 0
         self.apply_preset_voice(save=False, show_notice=False)
@@ -1579,13 +1587,11 @@ class MenuApp:
 
     def render_menu(self):
         d = self.display
-        d.text("AMYboard Menu", 0, 0, 255)
-        y = 16
+        y = 2
         for i, item in enumerate(self.menu_items):
             marker = ">" if i == self.menu_index else " "
             d.text(marker + item[:18], 0, y, 255)
-            y += 16
-        d.text("click:enter long:panic", 0, 112, 160)
+            y += 14
 
     def render(self):
         d = self.display
@@ -1599,8 +1605,8 @@ class MenuApp:
 
         now = time.ticks_ms()
         if self.notice_msg and time.ticks_diff(self.notice_until, now) > 0:
-            d.fill_rect(0, 96, 128, 16, 0)
-            d.text(self.notice_msg[:21], 0, 112, 255)
+            d.fill_rect(0, 112, 128, 16, 0)
+            d.text(self.notice_msg[:21], 0, 114, 255)
 
         d.refresh()
 
@@ -1608,6 +1614,16 @@ class MenuApp:
         last_save = time.ticks_ms()
         
         while True:
+            try:
+                import sys, select
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    ch = sys.stdin.read(1)
+                    if ch in ('\x03', '\x04', 'q', 'r', 'x'):
+                        print("\n=== REPL BREAK: EXITING MENU LOOP ===\n")
+                        break
+            except Exception:
+                pass
+
             now = time.ticks_ms()
 
             ev = self.input_driver.poll(now)

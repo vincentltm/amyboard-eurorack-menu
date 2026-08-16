@@ -1,5 +1,7 @@
 import sys
-sys.path.append("/current")
+for p in ("/sd/current", "/user/current", "/current"):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 # --- Safe mode: hold encoder button at boot to skip menu ---
 _SAFE_MODE = False
@@ -58,6 +60,8 @@ except Exception:
     pass  # If anything fails, just boot normally
 
 if not _SAFE_MODE:
+    if "menu" in sys.modules:
+        del sys.modules["menu"]
     import menu
     menu.main()
 
