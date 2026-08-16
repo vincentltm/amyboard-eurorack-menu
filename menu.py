@@ -855,15 +855,15 @@ class GroupPage(PageBase):
             self.app.open_page(key)
 
     def render(self, d):
-        d.text(self.title.upper(), 0, 1, 255)
+        d.text(self.title, 0, 1, 255)
         d.hline(0, 12, 128, 255)
         visible_count = 6
         start = self.offset
         end = min(len(self.items), start + visible_count)
         y = 18
         for i in range(start, end):
-            marker = "> " if i == self.sel else "  "
-            d.text(marker + self.items[i][:14], 0, y, 255)
+            marker = ">" if i == self.sel else " "
+            d.text("%s %s" % (marker, self.items[i][:13]), 0, y, 255)
             y += 16
 
         if len(self.items) > visible_count:
@@ -905,7 +905,7 @@ class PerformPage(PageBase):
         # 1. Top Ribbon: Patch & Transport State (y=0..12)
         status_str = "RUN" if seq.get("running", False) else "STP"
         d.text("[%s] #%03d" % (status_str, p["patch"]), 0, 1, 255)
-        d.text(pname[:7], 72, 1, 255)
+        d.text(pname[:6], 80, 1, 255)
         d.hline(0, 12, 128, 255)
 
         # 2. Left Macro Meters: M1 & M2 (x=0..12, y=16..84)
@@ -955,9 +955,9 @@ class PerformPage(PageBase):
         if self.app.seq_last_note >= 0:
             n_name = SequencerPage.NOTE_NAMES[self.app.seq_last_note % 12]
             n_oct = (self.app.seq_last_note // 12) - 1
-            d.text("NOTE:%s%d" % (n_name, n_oct), 64, 92, 255)
+            d.text("N:%s%d" % (n_name, n_oct), 72, 92, 255)
         else:
-            d.text("VOX:%d" % p.get("num_voices", 1), 76, 92, 255)
+            d.text("Vox:%d" % p.get("num_voices", 1), 76, 92, 255)
 
         curr_step = self.app.seq_step % 16 if seq.get("running", False) else -1
         for i in range(16):
@@ -1064,7 +1064,7 @@ class DrumMachinePage(PageBase):
             euc = [raw[(i - rot) % steps] for i in range(steps)]
 
             for step_i in range(steps):
-                px = 32 + step_i * 6
+                px = 30 + step_i * 6
                 d.rect(px, ty + 1, 5, 6, 255)
                 if euc[step_i]:
                     d.fill_rect(px + 1, ty + 2, 3, 4, 255)
@@ -1077,11 +1077,11 @@ class DrumMachinePage(PageBase):
         t = drums["tracks"][self.track_idx]
         tname = self.TRACK_NAMES[self.track_idx]
         params = [
-            ("TRK", tname),
-            ("HITS", "%d/%d" % (t.get("hits", 4), t.get("steps", 16))),
-            ("ROT", "%d" % t.get("rotate", 0)),
-            ("MUTE", "YES" if t.get("mute", False) else "NO"),
-            ("VOL", "%d%%" % t.get("vol", 80)),
+            ("Track", tname[:4]),
+            ("Hits", "%d/%d" % (t.get("hits", 4), t.get("steps", 16))),
+            ("Rot", "%d" % t.get("rotate", 0)),
+            ("Mute", "YES" if t.get("mute", False) else "NO"),
+            ("Vol", "%d%%" % t.get("vol", 80)),
         ]
         
         visible_count = 3
@@ -1093,7 +1093,7 @@ class DrumMachinePage(PageBase):
             marker = ">" if is_sel else " "
             star = "*" if (is_sel and self.editing) else " "
             d.text("%s%s%s" % (marker, star, pname), 0, y, 255)
-            d.text(pval, 64, y, 255)
+            d.text(pval, 60, y, 255)
             y += 16
 
 
@@ -1186,33 +1186,22 @@ class EnvPage(PageBase):
 
         # 2. Parameters List (y=76..127)
         d.hline(0, 74, 128, 255)
-        params = [
-            ("TGT", env.get("target", "AMP")),
-            ("A", "%dms" % att),
-            ("D", "%dms" % dec),
-            ("S", "%d%%" % int(sus * 100)),
-            ("R", "%dms" % rel),
-        ]
         
-        # Row 1: TGT, A, D
-        for idx in range(3):
-            pname, pval = params[idx]
-            is_sel = (idx == self.sel)
-            marker = ">" if is_sel else " "
-            star = "*" if (is_sel and self.editing) else ""
-            bx = idx * 42
-            d.text("%s%s%s:%s" % (marker, star, pname, pval[:5]), bx, 80, 255)
+        # Dense Row 1: Target, Attack
+        is_sel0 = (self.sel == 0)
+        is_sel1 = (self.sel == 1)
+        d.text("%sTgt:%s" % (">" if is_sel0 else " ", env.get("target", "AMP")), 0, 78, 255)
+        d.text("%sAtt:%dms" % (">" if is_sel1 else " ", att), 64, 78, 255)
 
-        # Row 2: S, R
-        for idx in range(3, 5):
-            pname, pval = params[idx]
-            is_sel = (idx == self.sel)
-            marker = ">" if is_sel else " "
-            star = "*" if (is_sel and self.editing) else ""
-            bx = (idx - 3) * 64
-            d.text("%s%s%s:%s" % (marker, star, pname, pval[:6]), bx, 98, 255)
+        # Dense Row 2: Decay, Sustain
+        is_sel2 = (self.sel == 2)
+        is_sel3 = (self.sel == 3)
+        d.text("%sDec:%dms" % (">" if is_sel2 else " ", dec), 0, 94, 255)
+        d.text("%sSus:%d%%" % (">" if is_sel3 else " ", int(sus * 100)), 64, 94, 255)
 
-        d.text("Target: %s Envelope" % env.get("target", "AMP"), 0, 114, 255)
+        # Dense Row 3: Release
+        is_sel4 = (self.sel == 4)
+        d.text("%sRel:%dms" % (">" if is_sel4 else " ", rel), 0, 110, 255)
 
 
 class LFOPage(PageBase):
@@ -1273,7 +1262,7 @@ class LFOPage(PageBase):
 
     def render(self, d):
         lfo = self._lfo()
-        d.text("MODULATION LFO%d" % (self.lfo_id + 1), 0, 1, 255)
+        d.text("LFO %d" % (self.lfo_id + 1), 0, 1, 255)
         mode_str = "EDIT" if self.editing else "SEL"
         d.text("[%s]" % mode_str, 88, 1, 255)
         d.hline(0, 12, 128, 255)
@@ -1316,17 +1305,17 @@ class LFOPage(PageBase):
         d.hline(0, 68, 128, 255)
         params = [
             ("LFO", "LFO %d" % (self.lfo_id + 1)),
-            ("Wave", wave[:7]),
+            ("Wave", wave[:6]),
             ("Rate", "%.2fHz" % rate),
             ("Depth", "%d%%" % int(depth * 100)),
-            ("Dest", lfo.get("dest", "None")[:8]),
+            ("Dest", lfo.get("dest", "None")[:7]),
         ]
         y = 72
         for i, (label, val) in enumerate(params):
             marker = ">" if i == self.sel else " "
             star = "*" if (self.editing and i == self.sel) else " "
             d.text("%s%s%s" % (marker, star, label), 0, y, 255)
-            d.text(val, 56, y, 255)
+            d.text(val, 52, y, 255)
             y += 11
 
 
@@ -1403,7 +1392,7 @@ class PatchesPage(PageBase):
             name = self._item_label(i)
             if i > 0 and self.files[i - 1] == current:
                 name = "*" + name
-            d.text(prefix + name[:15], 0, y, 255)
+            d.text("%s%s" % (prefix, name[:14]), 0, y, 255)
             y += 15
 
 
@@ -1464,12 +1453,12 @@ class PresetVoicePage(PageBase):
         pname = self.app.patch_label(patch)
         bank_tag = "JUNO" if patch < 128 else ("DX7" if patch < 256 else "PCM")
         d.rect(0, 16, 128, 16, 255)
-        d.text("%s: %s" % (bank_tag, pname[:10]), 4, 20, 255)
+        d.text("%s: %s" % (bank_tag, pname[:9]), 4, 20, 255)
 
         # 2. Parameter fields exactly matching self.fields (sel 0, 1, 2)
         rows = [
             ("Patch", "#%03d" % patch),
-            ("Synth", "Engine %d" % synth),
+            ("Synth", "Eng %d" % synth),
             ("Poly", "%d vox" % voices),
         ]
         y = 38
@@ -1477,7 +1466,7 @@ class PresetVoicePage(PageBase):
             marker = ">" if i == self.sel else " "
             star = "*" if (self.editing and i == self.sel) else " "
             d.text("%s%s%s" % (marker, star, label), 0, y, 255)
-            d.text(val, 60, y, 255)
+            d.text(val, 56, y, 255)
             y += 18
 
         d.hline(0, 96, 128, 255)
@@ -2770,13 +2759,13 @@ class MenuApp:
         }
 
         self.menu_items = [
-            "1. PERFORMANCE",
-            "2. SYNTHESIZER",
-            "3. RHYTHM & SEQ",
-            "4. MODULATION",
-            "5. MASTER FX",
-            "6. OSCILLOSCOPE",
-            "7. SYSTEM & SD",
+            "Performance",
+            "Synthesizer",
+            "Rhythm & Seq",
+            "Modulation",
+            "Master FX",
+            "Oscilloscope",
+            "System & SD",
         ]
         self.menu_keys = [
             "perform",
@@ -3142,8 +3131,8 @@ class MenuApp:
         for i in range(start, end):
             item = self.menu_items[i]
             is_active = (i == self.menu_index)
-            marker = "> " if is_active else "  "
-            d.text(marker + item[:15], 0, y, 255)
+            marker = ">" if is_active else " "
+            d.text("%s %s" % (marker, item[:13]), 0, y, 255)
             y += 16
 
         total_items = len(self.menu_items)
