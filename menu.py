@@ -879,7 +879,7 @@ class GroupPage(PageBase):
 
 class DrumMachinePage(PageBase):
     title = "Drums"
-    TRACK_NAMES = ["KICK", "SNARE", "HIHAT", "PERC"]
+    TRACK_NAMES = ["KICK", "SNARE", "HIHAT", "CLAP"]
     FIELDS = ["STATE", "TRACK", "HITS", "ROTATE", "MUTE", "VOL", "BPM"]
 
     def __init__(self, app):
@@ -903,7 +903,7 @@ class DrumMachinePage(PageBase):
                 {"hits": 4, "steps": 16, "rotate": 0, "mute": False, "vol": 90},
                 {"hits": 2, "steps": 16, "rotate": 4, "mute": False, "vol": 85},
                 {"hits": 8, "steps": 16, "rotate": 0, "mute": False, "vol": 70},
-                {"hits": 3, "steps": 12, "rotate": 2, "mute": False, "vol": 75},
+                {"hits": 2, "steps": 16, "rotate": 12, "mute": False, "vol": 75},
             ]
         })
         t = drums["tracks"][self.track_idx]
@@ -915,6 +915,18 @@ class DrumMachinePage(PageBase):
                 f = self.FIELDS[self.sel]
                 if f == "STATE":
                     drums["running"] = not drums.get("running", False)
+                    if drums["running"]:
+                        self.app.drum_step = -1
+                        bpm = drums.get("bpm", 120)
+                        interval = int(15000.0 / max(40, bpm))
+                        self.app.drum_last_tick = time.ticks_add(time.ticks_ms(), -interval)
+                    else:
+                        try:
+                            import amy
+                            for tidx in range(4):
+                                amy.send(osc=32 + tidx, vel=0)
+                        except Exception:
+                            pass
                 elif f == "MUTE":
                     t["mute"] = not t.get("mute", False)
                 else:
@@ -925,6 +937,18 @@ class DrumMachinePage(PageBase):
         if ev.delta != 0:
             if f == "STATE":
                 drums["running"] = not drums.get("running", False)
+                if drums["running"]:
+                    self.app.drum_step = -1
+                    bpm = drums.get("bpm", 120)
+                    interval = int(15000.0 / max(40, bpm))
+                    self.app.drum_last_tick = time.ticks_add(time.ticks_ms(), -interval)
+                else:
+                    try:
+                        import amy
+                        for tidx in range(4):
+                            amy.send(osc=32 + tidx, vel=0)
+                    except Exception:
+                        pass
             elif f == "TRACK":
                 self.track_idx = (self.track_idx + ev.delta) % 4
             elif f == "HITS":
@@ -949,7 +973,7 @@ class DrumMachinePage(PageBase):
                 {"hits": 4, "steps": 16, "rotate": 0, "mute": False, "vol": 90},
                 {"hits": 2, "steps": 16, "rotate": 4, "mute": False, "vol": 85},
                 {"hits": 8, "steps": 16, "rotate": 0, "mute": False, "vol": 70},
-                {"hits": 3, "steps": 12, "rotate": 2, "mute": False, "vol": 75},
+                {"hits": 2, "steps": 16, "rotate": 12, "mute": False, "vol": 75},
             ]
         })
         running = drums.get("running", False)
@@ -978,7 +1002,7 @@ class DrumMachinePage(PageBase):
             euc = [raw[(i - rot) % steps] for i in range(steps)]
 
             for step_i in range(steps):
-                px = 30 + step_i * 6
+                px = 28 + step_i * 6
                 d.rect(px, ty + 1, 5, 6, 255)
                 if euc[step_i]:
                     d.fill_rect(px + 1, ty + 2, 3, 4, 255)
@@ -2572,7 +2596,7 @@ DEFAULT_CFG = {
             {"hits": 4, "steps": 16, "rotate": 0, "mute": False, "vol": 90},
             {"hits": 2, "steps": 16, "rotate": 4, "mute": False, "vol": 85},
             {"hits": 8, "steps": 16, "rotate": 0, "mute": False, "vol": 70},
-            {"hits": 3, "steps": 12, "rotate": 2, "mute": False, "vol": 75},
+            {"hits": 2, "steps": 16, "rotate": 12, "mute": False, "vol": 75},
         ]
     },
     "envelope": {
@@ -3252,13 +3276,15 @@ class MenuApp:
         if not drums.get("running", False):
             return
         bpm = drums.get("bpm", 120)
+        if bpm <= 0:
+            bpm = 120
         step_interval = int(15000.0 / bpm)
         if time.ticks_diff(now, self.drum_last_tick) >= step_interval:
             self.drum_last_tick = now
             self.drum_step = (self.drum_step + 1) % 16
             
             tracks = drums.get("tracks", [])
-            drum_patches = [0, 1, 2, 3]
+            drum_patches = [0, 1, 2, 4]
             
             for tidx in range(min(4, len(tracks))):
                 t = tracks[tidx]
@@ -3270,7 +3296,7 @@ class MenuApp:
                 raw = generate_euclidean(hits, steps)
                 step_idx = (self.drum_step - rot) % steps
                 if raw[step_idx]:
-                    vol = t.get("vol", 80) / 100.0
+                    vol = (t.get("vol", 80) / 100.0) * 1.5
                     try:
                         import amy
                         amy.send(osc=32 + tidx, wave=amy.PCM, patch=drum_patches[tidx], vel=vol)
